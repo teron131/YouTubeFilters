@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>YouTube Filter</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 10px;
+        min-width: 350px;
+        max-height: 600px;
+        overflow-y: auto;
+      }
+      .section {
+        background: #f5f5f5;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 10px;
+      }
+      .stat-item {
+        margin: 5px 0;
+      }
+      .setting-item {
+        margin: 10px 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .setting-item label {
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      .setting-item input[type="number"] {
+        width: 100px;
+      }
+      .filter-toggle {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+      }
+      .filter-toggle input[type="checkbox"] {
+        margin-right: 8px;
+      }
+      .keyword-list {
+        margin: 5px 0;
+      }
+      .keyword-item {
+        display: inline-block;
+        background: #e0e0e0;
+        padding: 2px 8px;
+        margin: 2px;
+        border-radius: 3px;
+      }
+      .keyword-item button {
+        margin-left: 5px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: #666;
+      }
+      #newKeyword {
+        width: 150px;
+      }
+      .save-button {
+        background: #4caf50;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-top: 10px;
+      }
+      .save-button:hover {
+        background: #45a049;
+      }
+      .filtered-video {
+        padding: 5px;
+        margin: 5px 0;
+        border-bottom: 1px solid #ddd;
+        font-size: 12px;
+      }
+      .filtered-video .reason {
+        color: #666;
+        font-style: italic;
+      }
+      .filtered-videos-list {
+        max-height: 200px;
+        overflow-y: auto;
+        margin-top: 10px;
+      }
+      .clear-button {
+        background: #f44336;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        margin-top: 5px;
+      }
+      .clear-button:hover {
+        background: #d32f2f;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>YouTube Filter</h1>
+
+    <div class="section">
+      <h2>Filtered By</h2>
+      <div id="stats-content">
+        <div class="stat-item">Views: <span id="views-count">0</span></div>
+        <div class="stat-item">
+          Duration: <span id="duration-count">0</span>
+        </div>
+        <div class="stat-item">Age: <span id="age-count">0</span></div>
+        <div class="stat-item">
+          Keywords: <span id="keywords-count">0</span>
+        </div>
+        <div class="stat-item">Total: <span id="total-count">0</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Settings</h2>
+      <div class="setting-item">
+        <div class="filter-toggle">
+          <input type="checkbox" id="viewsFilterEnabled" />
+          <label for="viewsFilterEnabled">Enable Views Filter</label>
+        </div>
+        <label for="minViews">Minimum Views</label>
+        <input type="number" id="minViews" min="0" step="1000" />
+      </div>
+
+      <div class="setting-item">
+        <div class="filter-toggle">
+          <input type="checkbox" id="durationFilterEnabled" />
+          <label for="durationFilterEnabled">Enable Duration Filter</label>
+        </div>
+        <label for="minDuration">Duration Range (seconds)</label>
+        <div style="display: flex; gap: 10px; align-items: center">
+          <input type="number" id="minDuration" min="0" placeholder="Min" />
+          <span>to</span>
+          <input type="number" id="maxDuration" min="0" placeholder="Max" />
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="filter-toggle">
+          <input type="checkbox" id="ageFilterEnabled" />
+          <label for="ageFilterEnabled">Enable Age Filter</label>
+        </div>
+        <label for="maxAgeYears">Maximum Video Age (years)</label>
+        <input
+          type="number"
+          id="maxAgeYears"
+          min="0"
+          max="20"
+          step="1"
+          placeholder="e.g. 5"
+        />
+      </div>
+
+      <div class="setting-item">
+        <div class="filter-toggle">
+          <input type="checkbox" id="keywordFilterEnabled" />
+          <label for="keywordFilterEnabled">Enable Keyword Filter</label>
+        </div>
+        <label>Banned Keywords</label>
+        <div id="keywordsList" class="keyword-list"></div>
+        <div style="display: flex; gap: 5px; margin-top: 5px">
+          <input type="text" id="newKeyword" placeholder="Add new keyword" />
+          <button
+            id="addKeywordButton"
+            class="save-button"
+            style="margin-top: 0"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      <button id="saveSettings" class="save-button">Save Settings</button>
+    </div>
+
+    <div class="section">
+      <h2>Recently Filtered Videos</h2>
+      <div id="filteredVideosList" class="filtered-videos-list"></div>
+      <button id="clearFilteredVideos" class="clear-button">
+        Clear History
+      </button>
+    </div>
+
+    <script src="setting.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
