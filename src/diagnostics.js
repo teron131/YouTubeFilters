@@ -160,7 +160,7 @@ function diagnosticDeepInspection() {
   });
   console.log(`   ... ${spans.length} total spans found`);
   
-  console.log("\n💡 Use this information to update selectors in content.js");
+  console.log("\n💡 Use this information to update selectors in src/content/main.js");
 }
 
 
