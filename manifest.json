@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Recommendation Filter",
+  "version": "1.0",
+  "description": "Filtering YouTube recommendation pages.",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["setting.js", "youtube-data-extractor.js", "content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
