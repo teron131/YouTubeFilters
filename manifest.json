@@ -6,17 +6,21 @@
   "permissions": ["storage", "scripting"],
   "host_permissions": ["*://*.youtube.com/*"],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "src/background/background.js"
   },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["setting.js", "youtube-data-extractor.js", "content.js"],
+      "js": [
+        "src/content/setting.js",
+        "src/content/youtube-data-extractor.js",
+        "src/content/content.js"
+      ],
       "run_at": "document_end"
     }
   ],
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "src/popup/popup.html",
     "default_icon": "icon.png"
   },
   "icons": {
