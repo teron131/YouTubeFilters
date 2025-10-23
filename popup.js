@@ -36,6 +36,107 @@ function displayKeywords(keywords) {
   keywordsList.appendChild(fragment);
 }
 
+// Open subscriptions page link
+function openSubscriptionsPageLink() {
+  chrome.tabs.create({ url: "https://www.youtube.com/feed/channels" });
+}
+
+// Extract subscriptions from active tab (via background script)
+function extractSubscriptionsFromTab() {
+  const statusDiv = document.getElementById("subscriptionStatus");
+  const extractButton = document.getElementById("extractSubscriptionsButton");
+  
+  if (!extractButton) {
+    console.error("Extract button not found");
+    return;
+  }
+  
+  extractButton.disabled = true;
+  statusDiv.innerHTML = '<div class="status-text">⏳ Extracting subscriptions...<br><small>Using advanced method for full extraction</small></div>';
+  
+  // Set a timeout to prevent hanging forever
+  let timeoutId = null;
+  
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs[0]) {
+      statusDiv.innerHTML = '<div class="status-text error">❌ No active tab found</div>';
+      extractButton.disabled = false;
+      return;
+    }
+    
+    const tab = tabs[0];
+    console.log("[Popup] Active tab URL:", tab.url);
+    
+    if (!tab.url.includes("youtube.com/feed/channels")) {
+      statusDiv.innerHTML = '<div class="status-text error">❌ Please navigate to YouTube subscriptions page first<br><small>Current: ' + (tab.url.split('/')[2] || 'unknown') + '</small></div>';
+      extractButton.disabled = false;
+      return;
+    }
+    
+    // Set 10 second timeout
+    timeoutId = setTimeout(() => {
+      extractButton.disabled = false;
+      statusDiv.innerHTML = '<div class="status-text error">❌ Extraction timeout<br><small>Try reloading the page and extension</small></div>';
+      console.error("[Popup] Extraction timeout");
+    }, 10000);
+    
+    // Send message to background script (not content script!)
+    chrome.runtime.sendMessage(
+      { action: "extractSubscriptions", tabId: tab.id },
+      (response) => {
+        // Clear timeout if we got a response
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        
+        extractButton.disabled = false;
+        
+        if (chrome.runtime.lastError) {
+          console.error("Error:", chrome.runtime.lastError);
+          statusDiv.innerHTML = '<div class="status-text error">❌ Failed to extract:<br><small>' + chrome.runtime.lastError.message + '</small></div>';
+          return;
+        }
+        
+        if (response && response.success) {
+          statusDiv.innerHTML = `<div class="status-text success">✅ Successfully extracted ${response.count} subscriptions!<br><small>Full extraction using advanced method</small></div>`;
+          displaySubscriptionsFromStorage();
+        } else if (response) {
+          statusDiv.innerHTML = '<div class="status-text error">❌ Extraction failed:<br><small>' + (response.error || "Unknown error") + '</small></div>';
+        } else {
+          statusDiv.innerHTML = '<div class="status-text error">❌ No response from background script<br><small>Try reloading the extension</small></div>';
+        }
+      }
+    );
+  });
+}
+
+// Display subscriptions from storage
+function displaySubscriptionsFromStorage() {
+  chrome.storage.local.get(["youtube_subscriptions"], (result) => {
+    const subscriptionsList = document.getElementById("subscriptionsList");
+    const subscriptionSection = document.getElementById("subscriptionSection");
+    
+    if (!subscriptionsList) return;
+    
+    const data = result.youtube_subscriptions;
+    
+    if (!data || !data.channels || data.channels.length === 0) {
+      if (subscriptionSection) {
+        subscriptionSection.classList.remove("visible");
+      }
+      return;
+    }
+    
+    if (subscriptionSection) {
+      subscriptionSection.classList.add("visible");
+    }
+    subscriptionsList.innerHTML = data.channels
+      .map(ch => `<div class="subscription-item">${ch}</div>`)
+      .join("");
+  });
+}
+
 // Add a new keyword
 function addKeyword() {
   const input = document.getElementById("newKeyword");
@@ -146,7 +247,9 @@ function updateStats() {
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   updateStats();
+  displaySubscriptionsFromStorage();
   setInterval(updateStats, 1000);
+  setInterval(displaySubscriptionsFromStorage, 2000);
 
   // Add event listeners
   document
@@ -158,6 +261,12 @@ document.addEventListener("DOMContentLoaded", () => {
   document
     .getElementById("addKeywordButton")
     .addEventListener("click", addKeyword);
+  document
+    .getElementById("openSubscriptionsLink")
+    .addEventListener("click", openSubscriptionsPageLink);
+  document
+    .getElementById("extractSubscriptionsButton")
+    .addEventListener("click", extractSubscriptionsFromTab);
 
   // Make functions available globally for keyword removal
   window.removeKeyword = removeKeyword;

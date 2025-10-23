@@ -3,8 +3,11 @@
   "name": "YouTube Recommendation Filter",
   "version": "1.0",
   "description": "Filtering YouTube recommendation pages.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "scripting"],
   "host_permissions": ["*://*.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],

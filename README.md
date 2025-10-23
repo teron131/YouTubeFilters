@@ -12,6 +12,7 @@ A robust Chrome extension that filters YouTube videos based on views, duration, 
 - **Real-time Filtering**: Automatically filters new videos as you scroll (infinite scroll support)
 - **Dynamic Updates**: Dual-layer detection (MutationObserver + scroll events) ensures filtering works on lazy-loaded content
 - **Statistics Dashboard**: Track how many videos were filtered by each criterion
+- **Subscription Extraction**: Extracts and filters based on the user's YouTube subscription status
 
 ## Installation
 
@@ -146,6 +147,7 @@ YouTubeFilters/
 ├── setting.js                 # Default settings and constants
 ├── content.js                 # Main filtering logic (see ARCHITECTURE.md)
 ├── youtube-data-extractor.js  # Advanced data extraction utilities
+├── youtube-subscription-extractor.js # YouTube subscription channel extraction
 ├── popup.html                 # Settings UI
 ├── popup.js                   # Settings UI logic
 ├── diagnostics.js             # Full diagnostic toolkit (paste in console)

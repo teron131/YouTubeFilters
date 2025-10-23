@@ -458,6 +458,12 @@ function runAllFilters() {
  */
 function init() {
   console.log("[Filter] Initializing filter extension...");
+  
+  // Skip filtering on subscriptions page - only subscription extractor runs there
+  if (location.href.includes("/feed/channels")) {
+    console.log("[Filter] Skipping filters on subscriptions page - subscription extractor only");
+    return;
+  }
 
   // Load settings and start filtering
   chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
