@@ -1,68 +1,260 @@
 /**
  * YouTube Data Extractor
- * Advanced utility to extract video data from YouTube's internal data structures
+ * Prefer structured Polymer/ytInitialData metadata before falling back to DOM text.
  */
 
-/**
- * Extract video data from ytInitialData (YouTube's internal data structure)
- * This is more reliable than DOM parsing as it accesses the actual JSON data
- */
-function extractFromYTInitialData() {
+let cachedInitialData = null;
+let cachedVideoDataMap = null;
+
+function normalizeText(text) {
+    if (typeof text !== "string") {
+        return null;
+    }
+
+    const normalized = text.replace(/\s+/g, " ").trim();
+    return normalized || null;
+}
+
+function getTextContent(value) {
+    if (!value) {
+        return null;
+    }
+
+    if (typeof value === "string") {
+        return normalizeText(value);
+    }
+
+    if (value.simpleText) {
+        return normalizeText(value.simpleText);
+    }
+
+    if (value.content) {
+        return normalizeText(value.content);
+    }
+
+    if (Array.isArray(value.runs)) {
+        return normalizeText(
+            value.runs
+                .map((run) => run?.text || run?.emoji?.emojiId || "")
+                .join(""),
+        );
+    }
+
+    return null;
+}
+
+function isViewCountText(text) {
+    return Boolean(
+        text && (/\bviews?\b/i.test(text) || /no views?/i.test(text)),
+    );
+}
+
+function isPublishTimeText(text) {
+    return Boolean(
+        text &&
+            /(streamed\s+)?\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago/i.test(
+                text,
+            ),
+    );
+}
+
+function isDurationText(text) {
+    return Boolean(text && /^(?:\d+:)?\d{1,2}:\d{2}$/.test(text));
+}
+
+function extractBadgeText(badges) {
+    if (!Array.isArray(badges)) {
+        return null;
+    }
+
+    for (const badge of badges) {
+        const badgeText =
+            getTextContent(badge?.thumbnailBadgeViewModel?.text) ||
+            getTextContent(badge?.thumbnailBadgeViewModel?.animatedText) ||
+            getTextContent(badge?.metadataBadgeRenderer?.label) ||
+            getTextContent(badge?.metadataBadgeRenderer?.text);
+
+        if (isDurationText(badgeText)) {
+            return badgeText;
+        }
+    }
+
+    return null;
+}
+
+function extractDurationFromOverlays(overlays) {
+    if (!Array.isArray(overlays)) {
+        return null;
+    }
+
+    for (const overlay of overlays) {
+        const duration =
+            extractBadgeText(
+                overlay?.thumbnailBottomOverlayViewModel?.badges,
+            ) ||
+            extractBadgeText(
+                overlay?.thumbnailOverlayBadgeViewModel?.thumbnailBadges,
+            ) ||
+            getTextContent(overlay?.thumbnailOverlayTimeStatusRenderer?.text) ||
+            getTextContent(overlay?.thumbnailOverlayBadgeViewModel?.text) ||
+            getTextContent(overlay?.thumbnailBadgeViewModel?.text);
+
+        if (isDurationText(duration)) {
+            return duration;
+        }
+    }
+
+    return null;
+}
+
+function applyMetadataText(data, text) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+        return;
+    }
+
+    if (!data.viewCount && isViewCountText(normalized)) {
+        data.viewCount = normalized;
+        return;
+    }
+
+    if (!data.publishTime && isPublishTimeText(normalized)) {
+        data.publishTime = normalized;
+        return;
+    }
+
+    if (!data.channelName) {
+        data.channelName = normalized;
+    }
+}
+
+function extractVideoIdFromEndpoint(endpoint) {
+    if (endpoint?.watchEndpoint?.videoId) {
+        return endpoint.watchEndpoint.videoId;
+    }
+
+    if (endpoint?.reelWatchEndpoint?.videoId) {
+        return endpoint.reelWatchEndpoint.videoId;
+    }
+
+    const url = endpoint?.commandMetadata?.webCommandMetadata?.url;
+    if (!url) {
+        return null;
+    }
+
     try {
-        // Access YouTube's internal data
-        const ytInitialData = window.ytInitialData;
-        if (!ytInitialData) {
-            console.log("[Filter] ytInitialData not available yet");
-            return null;
-        }
-
-        const videoDataMap = new Map();
-
-        // Navigate through the data structure to find video renderers
-        function traverseData(obj, path = "") {
-            if (!obj || typeof obj !== "object") return;
-
-            // Check if this is a richItemRenderer or videoRenderer
-            if (
-                obj.richItemRenderer ||
-                obj.videoRenderer ||
-                obj.gridVideoRenderer
-            ) {
-                const renderer =
-                    obj.richItemRenderer?.content ||
-                    obj.videoRenderer ||
-                    obj.gridVideoRenderer;
-
-                // Extract video data
-                const videoData = extractVideoFromRenderer(renderer);
-                if (videoData && videoData.videoId) {
-                    videoDataMap.set(videoData.videoId, videoData);
-                }
-            }
-
-            // Traverse arrays and objects
-            if (Array.isArray(obj)) {
-                obj.forEach((item, index) =>
-                    traverseData(item, `${path}[${index}]`),
-                );
-            } else {
-                Object.keys(obj).forEach((key) => {
-                    traverseData(obj[key], `${path}.${key}`);
-                });
-            }
-        }
-
-        traverseData(ytInitialData);
-        return videoDataMap;
+        return new URL(url, window.location.origin).searchParams.get("v");
     } catch (error) {
-        console.warn("[Filter] Error extracting from ytInitialData:", error);
+        console.debug("[Filter] Failed to parse endpoint URL:", error);
         return null;
     }
 }
 
-/**
- * Extract video information from a renderer object
- */
+function mergeVideoData(...sources) {
+    const merged = {
+        videoId: null,
+        title: null,
+        viewCount: null,
+        duration: null,
+        publishTime: null,
+        channelName: null,
+    };
+
+    for (const source of sources) {
+        if (!source) {
+            continue;
+        }
+
+        Object.keys(merged).forEach((key) => {
+            if (source[key] != null && source[key] !== "") {
+                merged[key] = source[key];
+            }
+        });
+    }
+
+    return merged;
+}
+
+function extractClassicRendererData(renderer) {
+    const data = {
+        videoId:
+            renderer.videoId ||
+            renderer.playlistVideoRenderer?.videoId ||
+            extractVideoIdFromEndpoint(renderer.navigationEndpoint) ||
+            null,
+        title:
+            getTextContent(renderer.title) ||
+            getTextContent(renderer.headline) ||
+            getTextContent(renderer.shortBylineText),
+        viewCount:
+            getTextContent(renderer.viewCountText) ||
+            getTextContent(renderer.shortViewCountText),
+        duration:
+            getTextContent(renderer.lengthText) ||
+            extractDurationFromOverlays(renderer.thumbnailOverlays),
+        publishTime: getTextContent(renderer.publishedTimeText),
+        channelName:
+            getTextContent(renderer.ownerText) ||
+            getTextContent(renderer.longBylineText) ||
+            getTextContent(renderer.shortBylineText),
+    };
+
+    return data;
+}
+
+function extractLockupData(lockup) {
+    const data = {
+        videoId: lockup.contentId || null,
+        title: getTextContent(lockup.metadata?.lockupMetadataViewModel?.title),
+        viewCount: null,
+        duration: extractDurationFromOverlays(
+            lockup.contentImage?.thumbnailViewModel?.overlays,
+        ),
+        publishTime: null,
+        channelName: null,
+    };
+
+    const metadataRows =
+        lockup.metadata?.lockupMetadataViewModel?.metadata
+            ?.contentMetadataViewModel?.metadataRows || [];
+
+    for (const row of metadataRows) {
+        for (const part of row.metadataParts || []) {
+            applyMetadataText(data, getTextContent(part?.text));
+        }
+    }
+
+    return data;
+}
+
+function unwrapRenderer(renderer) {
+    if (!renderer || typeof renderer !== "object") {
+        return null;
+    }
+
+    if (renderer.richItemRenderer) {
+        return renderer.richItemRenderer.content || renderer.richItemRenderer;
+    }
+
+    if (renderer.videoRenderer) {
+        return renderer.videoRenderer;
+    }
+
+    if (renderer.gridVideoRenderer) {
+        return renderer.gridVideoRenderer;
+    }
+
+    if (renderer.compactVideoRenderer) {
+        return renderer.compactVideoRenderer;
+    }
+
+    if (renderer.content) {
+        return renderer.content;
+    }
+
+    return renderer;
+}
+
 function extractVideoFromRenderer(renderer) {
     const data = {
         videoId: null,
@@ -74,152 +266,159 @@ function extractVideoFromRenderer(renderer) {
     };
 
     try {
-        // For lockupViewModel (new YouTube layout)
-        if (renderer.lockupViewModel) {
-            const lockup = renderer.lockupViewModel;
-
-            // Get video ID from contentId
-            data.videoId = lockup.contentId;
-
-            // Get title from metadata
-            if (lockup.metadata?.lockupMetadataViewModel?.title?.content) {
-                data.title =
-                    lockup.metadata.lockupMetadataViewModel.title.content;
-            }
-
-            // Get duration from thumbnail badge
-            if (lockup.contentImage?.thumbnailViewModel?.overlays) {
-                for (const overlay of lockup.contentImage.thumbnailViewModel
-                    .overlays) {
-                    if (overlay.thumbnailOverlayBadgeViewModel) {
-                        const badge =
-                            overlay.thumbnailOverlayBadgeViewModel
-                                .thumbnailBadges?.[0];
-                        if (badge?.thumbnailBadgeViewModel?.text) {
-                            data.duration = badge.thumbnailBadgeViewModel.text;
-                        }
-                    }
-                }
-            }
-
-            // Get view count and publish time from metadata rows
-            if (
-                lockup.metadata?.lockupMetadataViewModel?.metadata
-                    ?.contentMetadataViewModel?.metadataRows
-            ) {
-                const rows =
-                    lockup.metadata.lockupMetadataViewModel.metadata
-                        .contentMetadataViewModel.metadataRows;
-
-                for (const row of rows) {
-                    if (row.metadataParts) {
-                        for (const part of row.metadataParts) {
-                            const content = part.text?.content;
-                            if (!content) continue;
-
-                            // Check if it's a view count
-                            if (
-                                content.match(/\d+.*views?/i) ||
-                                content.match(/No views?/i)
-                            ) {
-                                data.viewCount = content;
-                            }
-                            // Check if it's publish time
-                            else if (
-                                content.match(
-                                    /ago|hour|day|week|month|year|minute|second/i,
-                                )
-                            ) {
-                                data.publishTime = content;
-                            }
-                            // Check if it's channel name
-                            else if (part.text?.commandRuns) {
-                                data.channelName = content;
-                            }
-                        }
-                    }
-                }
-            }
+        const unwrappedRenderer = unwrapRenderer(renderer);
+        if (!unwrappedRenderer) {
+            return data;
         }
-        // For traditional videoRenderer
-        else if (renderer.videoId) {
-            data.videoId = renderer.videoId;
 
-            // Title
-            if (renderer.title?.runs?.[0]?.text) {
-                data.title = renderer.title.runs[0].text;
-            } else if (renderer.title?.simpleText) {
-                data.title = renderer.title.simpleText;
-            }
-
-            // Duration
-            if (renderer.lengthText?.simpleText) {
-                data.duration = renderer.lengthText.simpleText;
-            }
-
-            // View count
-            if (renderer.viewCountText?.simpleText) {
-                data.viewCount = renderer.viewCountText.simpleText;
-            } else if (renderer.shortViewCountText?.simpleText) {
-                data.viewCount = renderer.shortViewCountText.simpleText;
-            }
-
-            // Publish time
-            if (renderer.publishedTimeText?.simpleText) {
-                data.publishTime = renderer.publishedTimeText.simpleText;
-            }
-
-            // Channel name
-            if (renderer.ownerText?.runs?.[0]?.text) {
-                data.channelName = renderer.ownerText.runs[0].text;
-            } else if (renderer.longBylineText?.runs?.[0]?.text) {
-                data.channelName = renderer.longBylineText.runs[0].text;
-            }
+        if (unwrappedRenderer.lockupViewModel) {
+            return {
+                ...data,
+                ...extractLockupData(unwrappedRenderer.lockupViewModel),
+            };
         }
+
+        return {
+            ...data,
+            ...extractClassicRendererData(unwrappedRenderer),
+        };
     } catch (error) {
         console.warn("[Filter] Error extracting from renderer:", error);
+        return data;
+    }
+}
+
+function getElementRenderer(element) {
+    const elementData =
+        element?.data ||
+        element?.__data ||
+        element?.__dataHost?.data ||
+        element?.__dataHost?.__data;
+
+    return unwrapRenderer(elementData);
+}
+
+function getVideoIdFromElement(element) {
+    const explicitVideoId = element
+        ?.querySelector("[data-video-id]")
+        ?.getAttribute("data-video-id");
+    if (explicitVideoId) {
+        return explicitVideoId;
     }
 
-    return data;
+    const href = element
+        ?.querySelector(
+            "a#thumbnail, a#video-title, a#video-title-link, a[href*='/watch']",
+        )
+        ?.getAttribute("href");
+
+    if (!href) {
+        return null;
+    }
+
+    try {
+        const url = new URL(href, window.location.origin);
+        return url.searchParams.get("v");
+    } catch (error) {
+        console.debug("[Filter] Failed to parse video URL:", error);
+        return null;
+    }
 }
 
 /**
- * Get video data for a DOM element by matching it with ytInitialData
+ * Extract video data from ytInitialData (YouTube's internal data structure).
+ */
+function extractFromYTInitialData() {
+    try {
+        const ytInitialData = window.ytInitialData;
+        if (!ytInitialData) {
+            console.log("[Filter] ytInitialData not available yet");
+            return null;
+        }
+
+        if (ytInitialData === cachedInitialData && cachedVideoDataMap) {
+            return cachedVideoDataMap;
+        }
+
+        const videoDataMap = new Map();
+
+        function traverseData(obj) {
+            if (!obj || typeof obj !== "object") {
+                return;
+            }
+
+            if (
+                obj.richItemRenderer ||
+                obj.videoRenderer ||
+                obj.gridVideoRenderer ||
+                obj.compactVideoRenderer ||
+                obj.lockupViewModel
+            ) {
+                const videoData = extractVideoFromRenderer(obj);
+                if (videoData.videoId) {
+                    videoDataMap.set(videoData.videoId, videoData);
+                }
+            }
+
+            if (Array.isArray(obj)) {
+                for (const item of obj) {
+                    traverseData(item);
+                }
+                return;
+            }
+
+            Object.keys(obj).forEach((key) => {
+                traverseData(obj[key]);
+            });
+        }
+
+        traverseData(ytInitialData);
+        cachedInitialData = ytInitialData;
+        cachedVideoDataMap = videoDataMap;
+        return videoDataMap;
+    } catch (error) {
+        console.warn("[Filter] Error extracting from ytInitialData:", error);
+        return null;
+    }
+}
+
+/**
+ * Get video data for a DOM element by preferring live Polymer data and falling
+ * back to ytInitialData matching.
  */
 function getVideoDataForElement(element) {
-    const dataMap = extractFromYTInitialData();
-    if (!dataMap) return null;
+    const renderer = getElementRenderer(element);
+    const directData = renderer ? extractVideoFromRenderer(renderer) : null;
 
-    // Try to find video ID from element
-    const videoIdAttr = element.querySelector("[data-video-id]");
-    if (videoIdAttr) {
-        const videoId = videoIdAttr.getAttribute("data-video-id");
-        return dataMap.get(videoId);
+    const dataMap = extractFromYTInitialData();
+    if (!dataMap) {
+        return directData;
     }
 
-    // Try to match by title
-    const titleElement =
-        element.querySelector("#video-title") ||
-        element.querySelector("a#video-title-link");
-    if (titleElement) {
-        const titleText = titleElement.textContent?.trim();
-        if (titleText) {
-            for (const [videoId, data] of dataMap.entries()) {
-                if (data.title === titleText) {
-                    return data;
-                }
+    const videoId = getVideoIdFromElement(element);
+    if (videoId && dataMap.has(videoId)) {
+        return mergeVideoData(dataMap.get(videoId), directData);
+    }
+
+    const titleText = normalizeText(
+        element.querySelector("#video-title, a#video-title-link")?.textContent,
+    );
+    if (titleText) {
+        for (const data of dataMap.values()) {
+            if (data.title === titleText) {
+                return mergeVideoData(data, directData);
             }
         }
     }
 
-    return null;
+    return directData;
 }
 
-// Export functions for use in content script
 if (typeof window !== "undefined") {
     window.YouTubeDataExtractor = {
         extractFromYTInitialData,
         extractVideoFromRenderer,
         getVideoDataForElement,
+        getVideoIdFromElement,
     };
 }

@@ -29,7 +29,7 @@ function parseViewCount(text) {
     }
 
     const directNumber = parseFloat(cleaned);
-    return isNaN(directNumber) ? 0 : directNumber;
+    return Number.isNaN(directNumber) ? 0 : directNumber;
 }
 
 /**
@@ -47,7 +47,7 @@ function parseDuration(text) {
         const parts = cleaned
             .split(":")
             .map((part) => parseInt(part.trim(), 10));
-        if (parts.some(isNaN)) return 0;
+        if (parts.some((part) => Number.isNaN(part))) return 0;
 
         if (parts.length === 2) {
             return parts[0] * 60 + parts[1]; // MM:SS
@@ -62,9 +62,9 @@ function parseDuration(text) {
     const minMatch = cleaned.match(/(\d+)\s*m(in(ute)?)?s?/i);
     const secMatch = cleaned.match(/(\d+)\s*s(ec(ond)?)?s?/i);
 
-    if (hourMatch) totalSeconds += parseInt(hourMatch[1]) * 3600;
-    if (minMatch) totalSeconds += parseInt(minMatch[1]) * 60;
-    if (secMatch) totalSeconds += parseInt(secMatch[1]);
+    if (hourMatch) totalSeconds += parseInt(hourMatch[1], 10) * 3600;
+    if (minMatch) totalSeconds += parseInt(minMatch[1], 10) * 60;
+    if (secMatch) totalSeconds += parseInt(secMatch[1], 10);
 
     return totalSeconds;
 }
@@ -77,7 +77,37 @@ function parseDuration(text) {
 function parseVideoAge(text) {
     if (!text) return 0;
     const match = text.match(/(\d+)\s+year/i);
-    return match ? parseInt(match[1]) : 0;
+    return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Normalizes extracted UI text for pattern matching.
+ * @param {string | null | undefined} text
+ * @returns {string | null}
+ */
+function normalizeText(text) {
+    if (typeof text !== "string") {
+        return null;
+    }
+
+    const normalized = text.replace(/\s+/g, " ").trim();
+    return normalized || null;
+}
+
+/**
+ * Returns the first regex match from text as a normalized string.
+ * @param {string | null | undefined} text
+ * @param {RegExp} pattern
+ * @returns {string | null}
+ */
+function extractMatch(text, pattern) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+        return null;
+    }
+
+    const match = normalized.match(pattern);
+    return match ? normalizeText(match[0]) : null;
 }
 
 // ============================================================================
@@ -93,58 +123,62 @@ function parseVideoAge(text) {
  * @returns {Object} Video data object with title, duration, views, etc.
  */
 function extractVideoData(videoElement) {
+    const structuredData =
+        window.YouTubeDataExtractor?.getVideoDataForElement(videoElement) || {};
     const data = {
-        title: null,
-        viewCount: null,
-        duration: null,
-        publishTime: null,
-        videoId: null,
+        title: structuredData.title || null,
+        viewCount: structuredData.viewCount || null,
+        duration: structuredData.duration || null,
+        publishTime: structuredData.publishTime || null,
+        videoId: structuredData.videoId || null,
+        channelName: structuredData.channelName || null,
     };
 
     try {
         // Extract Video ID
-        const videoData = videoElement.querySelector("[data-video-id]");
-        if (videoData) {
-            data.videoId = videoData.getAttribute("data-video-id");
+        if (!data.videoId) {
+            data.videoId =
+                window.YouTubeDataExtractor?.getVideoIdFromElement?.(
+                    videoElement,
+                ) || null;
         }
 
         // Extract Title
-        const titleElement =
-            videoElement.querySelector("#video-title") ||
-            videoElement.querySelector("a#video-title-link") ||
-            videoElement.querySelector("#video-title-link") ||
-            videoElement.querySelector("h3 a") ||
-            videoElement.querySelector("yt-formatted-string#video-title") ||
-            videoElement.querySelector("[aria-label*='by']");
+        if (!data.title) {
+            const titleElement =
+                videoElement.querySelector("#video-title") ||
+                videoElement.querySelector("a#video-title-link") ||
+                videoElement.querySelector("#video-title-link") ||
+                videoElement.querySelector("h3 a") ||
+                videoElement.querySelector("yt-formatted-string#video-title") ||
+                videoElement.querySelector("[aria-label]");
 
-        if (titleElement) {
             data.title =
-                titleElement.textContent?.trim() ||
-                titleElement.getAttribute("title")?.trim() ||
-                titleElement
-                    .getAttribute("aria-label")
-                    ?.split(" by ")[0]
-                    ?.trim();
+                normalizeText(titleElement?.textContent) ||
+                normalizeText(titleElement?.getAttribute("title")) ||
+                normalizeText(titleElement?.getAttribute("aria-label"));
         }
 
         // Extract Duration (Modern YouTube 2025+ uses badge-shape custom elements)
-        const durationSelectors = [
-            "badge-shape .yt-badge-shape__text", // Modern layout (2025+)
-            "badge-shape div",
-            ".yt-badge-shape__text",
-            "yt-thumbnail-badge-view-model",
-            "ytd-thumbnail-overlay-time-status-renderer span", // Legacy
-            "span.ytd-thumbnail-overlay-time-status-renderer",
-            "#time-status span",
-            ".badge-style-type-simple",
-        ];
+        if (!data.duration) {
+            const durationSelectors = [
+                "badge-shape .yt-badge-shape__text", // Modern layout (Home/Search)
+                "yt-thumbnail-bottom-overlay-view-model badge-shape .yt-badge-shape__text",
+                ".yt-badge-shape__text",
+                "yt-thumbnail-badge-view-model",
+                "ytd-thumbnail-overlay-time-status-renderer span", // Legacy
+                "span.ytd-thumbnail-overlay-time-status-renderer",
+                "#time-status span",
+                ".badge-style-type-simple",
+            ];
 
-        for (const selector of durationSelectors) {
-            const element = videoElement.querySelector(selector);
-            const text = element?.textContent?.trim();
-            if (text && text.match(/^\d+:\d+/)) {
-                data.duration = text;
-                break;
+            for (const selector of durationSelectors) {
+                const element = videoElement.querySelector(selector);
+                const text = normalizeText(element?.textContent);
+                if (text && /^(?:\d+:)?\d{1,2}:\d{2}$/.test(text)) {
+                    data.duration = text;
+                    break;
+                }
             }
         }
 
@@ -162,36 +196,53 @@ function extractVideoData(videoElement) {
             }
         }
 
-        // Extract Views and Publish Time (Modern YouTube doesn't use #metadata-line)
-        // Use regex on video card's innerText instead
-        const fullText = videoElement.innerText || "";
+        const metadataText = normalizeText(
+            [
+                videoElement.querySelector("#metadata-line")?.innerText,
+                videoElement.querySelector("ytd-video-meta-block")?.innerText,
+                videoElement.querySelector("#channel-info")?.innerText,
+            ]
+                .filter(Boolean)
+                .join(" "),
+        );
 
         // Extract view count
         if (!data.viewCount) {
-            const viewMatch = fullText.match(/(\d+(?:\.\d+)?[KMB]?)\s*views?/i);
+            data.viewCount =
+                extractMatch(
+                    metadataText,
+                    /(\d+(?:[.,]\d+)?\s*[KMB]?)\s*views?/i,
+                ) || extractMatch(metadataText, /No views?/i);
+        }
+
+        // Extract publish time
+        if (!data.publishTime) {
+            data.publishTime = extractMatch(
+                metadataText,
+                /(streamed\s+)?\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
+            );
+        }
+
+        // Final fallback: broad text parsing only when scoped metadata was absent.
+        const fullText = normalizeText(videoElement.innerText);
+
+        if (!data.viewCount && fullText) {
+            const viewMatch = fullText.match(
+                /(\d+(?:[.,]\d+)?\s*[KMB]?)\s*views?/i,
+            );
             if (viewMatch) {
-                data.viewCount = viewMatch[0];
+                data.viewCount = normalizeText(viewMatch[0]);
             } else if (fullText.match(/No views?/i)) {
                 data.viewCount = "No views";
             }
         }
 
-        // Extract publish time
-        if (!data.publishTime) {
+        if (!data.publishTime && fullText) {
             const timeMatch = fullText.match(
-                /(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
+                /(streamed\s+)?(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
             );
             if (timeMatch) {
-                data.publishTime = timeMatch[0];
-            } else if (
-                fullText.match(
-                    /streamed\s+(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
-                )
-            ) {
-                const streamMatch = fullText.match(
-                    /streamed\s+(\d+\s*(?:second|minute|hour|day|week|month|year)s?\s*ago)/i,
-                );
-                data.publishTime = streamMatch?.[1];
+                data.publishTime = normalizeText(timeMatch[0]);
             }
         }
     } catch (error) {
@@ -233,7 +284,7 @@ function checkViewsFilter(videoData, settings) {
     if (!videoData.viewCount) {
         return {
             shouldFilter: true,
-            reason: "no-views",
+            reason: "views",
             details: "No view count (likely Mix/Playlist)",
         };
     }
@@ -290,7 +341,9 @@ function checkDurationFilter(videoData, settings) {
  * @returns {Object} { shouldFilter: boolean, reason: string }
  */
 function checkAgeFilter(videoData, settings) {
-    if (!settings.ageFilterEnabled || settings.maxAge <= 0) {
+    const maxAgeYears = settings.maxAgeYears ?? settings.maxAge ?? 0;
+
+    if (!settings.ageFilterEnabled || maxAgeYears <= 0) {
         return { shouldFilter: false };
     }
 
@@ -299,7 +352,7 @@ function checkAgeFilter(videoData, settings) {
     }
 
     const videoAge = parseVideoAge(videoData.publishTime);
-    if (videoAge > settings.maxAge) {
+    if (videoAge > maxAgeYears) {
         return {
             shouldFilter: true,
             reason: "age",
@@ -315,11 +368,9 @@ function checkAgeFilter(videoData, settings) {
  * @returns {Object} { shouldFilter: boolean, reason: string }
  */
 function checkKeywordsFilter(videoData, settings) {
-    if (
-        !settings.keywordsFilterEnabled ||
-        !settings.bannedKeywords ||
-        settings.bannedKeywords.length === 0
-    ) {
+    const bannedKeywords = settings.keywords || settings.bannedKeywords || [];
+
+    if (!settings.keywordsFilterEnabled || bannedKeywords.length === 0) {
         return { shouldFilter: false };
     }
 
@@ -329,7 +380,7 @@ function checkKeywordsFilter(videoData, settings) {
 
     const titleLower = videoData.title.toLowerCase();
 
-    for (const keyword of settings.bannedKeywords) {
+    for (const keyword of bannedKeywords) {
         if (keyword && titleLower.includes(keyword.toLowerCase())) {
             return {
                 shouldFilter: true,

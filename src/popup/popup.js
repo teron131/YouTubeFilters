@@ -107,7 +107,7 @@ function extractSubscriptionsFromTab() {
                     return;
                 }
 
-                if (response && response.success) {
+                if (response?.success) {
                     statusDiv.innerHTML = `<div class="status-text success">✅ Successfully extracted ${response.count} subscriptions!<br><small>Full extraction using advanced method</small></div>`;
                     displaySubscriptionsFromStorage();
                 } else if (response) {
@@ -189,13 +189,13 @@ function saveSettings() {
         keywordFilterEnabled: document.getElementById("keywordFilterEnabled")
             .checked,
         ageFilterEnabled: document.getElementById("ageFilterEnabled").checked,
-        minViews: parseInt(document.getElementById("minViews").value) || 0,
+        minViews: parseInt(document.getElementById("minViews").value, 10) || 0,
         minDuration:
-            parseInt(document.getElementById("minDuration").value) || 0,
+            parseInt(document.getElementById("minDuration").value, 10) || 0,
         maxDuration:
-            parseInt(document.getElementById("maxDuration").value) || 0,
+            parseInt(document.getElementById("maxDuration").value, 10) || 0,
         maxAgeYears:
-            parseInt(document.getElementById("maxAgeYears").value) || 5,
+            parseInt(document.getElementById("maxAgeYears").value, 10) || 5,
     };
 
     chrome.storage.sync.get({ keywords: [] }, (result) => {
