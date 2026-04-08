@@ -38,12 +38,14 @@ A robust Chrome extension that filters YouTube videos based on views, duration, 
 ## For Developers
 
 **📚 Want to understand the code?** See [`ARCHITECTURE.md`](ARCHITECTURE.md) for:
+
 - Complete code structure breakdown (5 sections)
 - Data flow diagrams
 - How to add new filters
 - Debugging guide
 
 **🔧 Want to add a feature?** Follow the pattern in [`ARCHITECTURE.md`](ARCHITECTURE.md):
+
 1. Add extraction logic (Section 2)
 2. Add filter function (Section 3)
 3. Add to filter array (Section 4)
@@ -56,7 +58,8 @@ A robust Chrome extension that filters YouTube videos based on views, duration, 
 The extension uses multiple strategies to extract video data reliably:
 
 #### 1. **Direct DOM Access** (`content.js`)
-- **Modern Layout (2025+)**: 
+
+- **Modern Layout (2025+)**:
   - **Duration**: `badge-shape .yt-badge-shape__text` custom element
   - **Views/Time**: Regex extraction from video card `innerText`
   - No longer uses `#metadata-line` (doesn't exist on home page)
@@ -67,6 +70,7 @@ The extension uses multiple strategies to extract video data reliably:
 - Handles YouTube's dynamic class names and structure changes
 
 #### 2. **YouTube Internal Data** (`youtube-data-extractor.js`)
+
 - Accesses `ytInitialData` - YouTube's internal JSON structure
 - Duration stored in: `thumbnailBadgeViewModel.text`
 - Parses structured data from `lockupViewModel` and `videoRenderer` objects
@@ -77,7 +81,8 @@ The extension uses multiple strategies to extract video data reliably:
 
 **Before**: Used simple string matching like `textContent.includes(" views")` and DOM selectors like `#metadata-line`
 
-**After**: 
+**After**:
+
 - **Duration Extraction**: Discovered YouTube's `badge-shape` custom elements (2025 layout)
 - **Metadata Extraction**: Uses `innerText` + regex instead of DOM selectors
   - Home page doesn't have `#metadata-line` or `ytd-video-meta-block`
@@ -89,6 +94,7 @@ The extension uses multiple strategies to extract video data reliably:
 ### Data Structure Examples
 
 #### JSON Data (ytInitialData)
+
 ```javascript
 // YouTube stores video data like this:
 {
@@ -122,6 +128,7 @@ The extension uses multiple strategies to extract video data reliably:
 ```
 
 #### Rendered DOM Structure
+
 ```html
 <!-- Modern YouTube (2025+) renders duration as: -->
 <ytd-rich-item-renderer>
@@ -191,6 +198,7 @@ The extension logs detailed information to the browser console:
 ```
 
 To view logs:
+
 1. Open YouTube
 2. Press F12 to open DevTools
 3. Go to the Console tab
@@ -206,17 +214,20 @@ To view logs:
 ## Troubleshooting
 
 **Videos not being filtered?**
+
 1. Reload the extension: `chrome://extensions/` → Click refresh icon
 2. Reload the YouTube page
 3. Check console for errors
 4. Verify settings are enabled and saved
 
 **Popup not showing?**
+
 1. Click the extension icon again
 2. Reload the extension
 3. Check if the extension has proper permissions
 
 **"Unknown title" in logs?**
+
 - The extension is working but couldn't extract the title
 - Video will still be filtered if it matches other criteria
 - This may happen on ads or special content cards
@@ -224,6 +235,7 @@ To view logs:
 ## Privacy
 
 This extension:
+
 - ✅ Works entirely locally in your browser
 - ✅ Does not collect or transmit any data
 - ✅ Does not make external network requests
@@ -233,6 +245,7 @@ This extension:
 ## Contributing
 
 Contributions welcome! Key areas for improvement:
+
 - Add more filter types (channel-based, language, etc.)
 - Improve selector robustness for YouTube layout changes
 - Add whitelist functionality
@@ -244,6 +257,7 @@ Contributions welcome! Key areas for improvement:
 When YouTube changes their layout and filters stop working, use the diagnostic toolkit:
 
 **📁 Diagnostic Files:**
+
 - `diagnostics.js` - Full diagnostic toolkit (paste entire file in console)
 - `DIAGNOSTICS_README.md` - Detailed guide for each diagnostic function
 - `QUICK_TEST.txt` - One-liner tests for quick copy-paste
@@ -258,19 +272,19 @@ When YouTube changes their layout and filters stop working, use the diagnostic t
 
 ```javascript
 // Quick check if extraction is working
-quickExtractionTest()
+quickExtractionTest();
 
 // Find where data is located in DOM (when YouTube changes layout)
-diagnosticDeepInspection()
+diagnosticDeepInspection();
 
 // See what's being filtered and why
-diagnosticFilterStatus()
+diagnosticFilterStatus();
 
 // Test extraction on 5 videos
-diagnosticExtractionTest()
+diagnosticExtractionTest();
 
 // Monitor filtering during scroll
-diagnosticLiveScrollTest()
+diagnosticLiveScrollTest();
 ```
 
 ### When YouTube Changes Layout:
@@ -281,6 +295,7 @@ diagnosticLiveScrollTest()
 4. Test with `diagnosticExtractionTest()` to verify fixes
 
 **Example output:**
+
 ```
 === QUICK EXTRACTION TEST ===
 📊 Extraction Results:
@@ -299,6 +314,7 @@ MIT License - Feel free to use and modify as needed.
 ## Version History
 
 ### v1.0 (Current)
+
 - Initial release
 - View count, duration, keyword, and age filters
 - Robust data extraction with multiple fallback strategies
