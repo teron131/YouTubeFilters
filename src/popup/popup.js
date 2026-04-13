@@ -1,44 +1,64 @@
-// Load and display current settings
-function loadSettings() {
-	chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
-		document.getElementById("viewsFilterEnabled").checked =
-			settings.viewsFilterEnabled;
-		document.getElementById("durationFilterEnabled").checked =
-			settings.durationFilterEnabled;
-		document.getElementById("keywordFilterEnabled").checked =
-			settings.keywordFilterEnabled;
-		document.getElementById("ageFilterEnabled").checked =
-			settings.ageFilterEnabled;
-		document.getElementById("englishOnlyTitles").checked = Boolean(
-			settings.englishOnlyTitles,
-		);
-		document.getElementById("preserveSubscribedChannels").checked =
-			settings.preserveSubscribedChannels;
-		document.getElementById("minViews").value = settings.minViews;
-		document.getElementById("minDuration").value = settings.minDuration;
-		document.getElementById("maxDuration").value = settings.maxDuration;
-		document.getElementById("maxAgeYears").value = settings.maxAgeYears;
-		displayKeywords(settings.keywords || []);
-	});
+const FILTER_STAT_DEFAULTS = {
+	views: 0,
+	keywords: 0,
+	duration: 0,
+	age: 0,
+	language: 0,
+	total: 0,
+};
+const KEYWORD_STORAGE_DEFAULTS = { keywords: [] };
+const SUBSCRIPTIONS_PAGE_URL = "https://www.youtube.com/feed/channels";
+const SUBSCRIPTIONS_PAGE_MATCH = "youtube.com/feed/channels";
+const EXTRACTION_TIMEOUT_MS = 45000;
+const STATS_REFRESH_INTERVAL_MS = 1000;
+const SUBSCRIPTIONS_REFRESH_INTERVAL_MS = 2000;
+
+function getElement(id) {
+	return document.getElementById(id);
 }
 
-function normalizeSubscriptionRecord(channel) {
-	function labelFromPath(channelPath) {
-		if (typeof channelPath !== "string") {
-			return null;
-		}
+function getCheckboxValue(id) {
+	return Boolean(getElement(id)?.checked);
+}
 
-		if (channelPath.startsWith("/@")) {
-			return channelPath.slice(2);
-		}
+function getNumberValue(id, fallbackValue) {
+	const value = parseInt(getElement(id)?.value || "", 10);
+	return Number.isNaN(value) ? fallbackValue : value;
+}
 
-		if (channelPath.startsWith("/channel/")) {
-			return channelPath.slice("/channel/".length);
-		}
+function setSubscriptionStatus(markup) {
+	const statusElement = getElement("subscriptionStatus");
+	if (statusElement) {
+		statusElement.innerHTML = markup;
+	}
+}
 
+function setSubscriptionSectionVisible(isVisible) {
+	const sectionElement = getElement("subscriptionSection");
+	if (!sectionElement) {
+		return;
+	}
+
+	sectionElement.classList.toggle("visible", isVisible);
+}
+
+function labelFromPath(channelPath) {
+	if (typeof channelPath !== "string") {
 		return null;
 	}
 
+	if (channelPath.startsWith("/@")) {
+		return channelPath.slice(2);
+	}
+
+	if (channelPath.startsWith("/channel/")) {
+		return channelPath.slice("/channel/".length);
+	}
+
+	return null;
+}
+
+function normalizeSubscriptionRecord(channel) {
 	if (!channel) {
 		return null;
 	}
@@ -59,296 +79,339 @@ function normalizeSubscriptionRecord(channel) {
 	};
 }
 
-// Display keywords in the UI
-function displayKeywords(keywords) {
-	const keywordsList = document.getElementById("keywordsList");
+function renderKeywords(keywords) {
+	const keywordsList = getElement("keywordsList");
+	if (!keywordsList) {
+		return;
+	}
+
 	keywordsList.innerHTML = "";
 	const fragment = document.createDocumentFragment();
-	keywords.forEach((keyword) => {
+
+	for (const keyword of keywords) {
 		const keywordElement = document.createElement("span");
 		keywordElement.className = "keyword-item";
-		const textNode = document.createTextNode(keyword);
-		keywordElement.appendChild(textNode);
+		keywordElement.appendChild(document.createTextNode(keyword));
+
 		const removeButton = document.createElement("button");
 		removeButton.textContent = "×";
 		removeButton.addEventListener("click", () => removeKeyword(keyword));
 		keywordElement.appendChild(removeButton);
 		fragment.appendChild(keywordElement);
-	});
+	}
+
 	keywordsList.appendChild(fragment);
 }
 
-// Open subscriptions page link
-function openSubscriptionsPageLink() {
-	chrome.tabs.create({ url: "https://www.youtube.com/feed/channels" });
+function loadSettings() {
+	chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
+		getElement("viewsFilterEnabled").checked = settings.viewsFilterEnabled;
+		getElement("durationFilterEnabled").checked =
+			settings.durationFilterEnabled;
+		getElement("keywordFilterEnabled").checked = settings.keywordFilterEnabled;
+		getElement("ageFilterEnabled").checked = settings.ageFilterEnabled;
+		getElement("englishOnlyTitles").checked = Boolean(
+			settings.englishOnlyTitles,
+		);
+		getElement("preserveSubscribedChannels").checked =
+			settings.preserveSubscribedChannels;
+		getElement("minViews").value = settings.minViews;
+		getElement("minDuration").value = settings.minDuration;
+		getElement("maxDuration").value = settings.maxDuration;
+		getElement("maxAgeYears").value = settings.maxAgeYears;
+		renderKeywords(settings.keywords || []);
+	});
 }
 
-// Extract subscriptions from active tab (via background script)
-function extractSubscriptionsFromTab() {
-	const statusDiv = document.getElementById("subscriptionStatus");
-	const extractButton = document.getElementById("extractSubscriptionsButton");
+function openSubscriptionsPageLink() {
+	chrome.tabs.create({ url: SUBSCRIPTIONS_PAGE_URL });
+}
 
+function setExtractButtonDisabled(disabled) {
+	const extractButton = getElement("extractSubscriptionsButton");
+	if (extractButton) {
+		extractButton.disabled = disabled;
+	}
+}
+
+function getCurrentTabHostLabel(url) {
+	return url?.split("/")[2] || "unknown";
+}
+
+function extractSubscriptionsFromTab() {
+	const extractButton = getElement("extractSubscriptionsButton");
 	if (!extractButton) {
-		console.error("Extract button not found");
+		console.error("[Popup] Extract button not found");
 		return;
 	}
 
-	extractButton.disabled = true;
-	statusDiv.innerHTML =
-		'<div class="status-text">⏳ Extracting subscriptions...<br><small>Scrolling to load the full subscriptions list before saving.</small></div>';
+	setExtractButtonDisabled(true);
+	setSubscriptionStatus(
+		'<div class="status-text">⏳ Extracting subscriptions...<br><small>Scrolling to load the full subscriptions list before saving.</small></div>',
+	);
 
-	// Set a timeout to prevent hanging forever
 	let timeoutId = null;
 
 	chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-		if (!tabs[0]) {
-			statusDiv.innerHTML =
-				'<div class="status-text error">❌ No active tab found</div>';
-			extractButton.disabled = false;
+		const activeTab = tabs[0];
+		if (!activeTab) {
+			setSubscriptionStatus(
+				'<div class="status-text error">❌ No active tab found</div>',
+			);
+			setExtractButtonDisabled(false);
 			return;
 		}
 
-		const tab = tabs[0];
-		console.log("[Popup] Active tab URL:", tab.url);
+		console.log("[Popup] Active tab URL:", activeTab.url);
 
-		if (!tab.url.includes("youtube.com/feed/channels")) {
-			statusDiv.innerHTML =
+		if (!activeTab.url.includes(SUBSCRIPTIONS_PAGE_MATCH)) {
+			setSubscriptionStatus(
 				'<div class="status-text error">❌ Please navigate to YouTube subscriptions page first<br><small>Current: ' +
-				(tab.url.split("/")[2] || "unknown") +
-				"</small></div>";
-			extractButton.disabled = false;
+					getCurrentTabHostLabel(activeTab.url) +
+					"</small></div>",
+			);
+			setExtractButtonDisabled(false);
 			return;
 		}
 
-		// Allow time for the page to lazy-load the full subscriptions list.
 		timeoutId = setTimeout(() => {
-			extractButton.disabled = false;
-			statusDiv.innerHTML =
-				'<div class="status-text error">❌ Extraction timeout<br><small>Try reloading the page and extension</small></div>';
+			setExtractButtonDisabled(false);
+			setSubscriptionStatus(
+				'<div class="status-text error">❌ Extraction timeout<br><small>Try reloading the page and extension</small></div>',
+			);
 			console.error("[Popup] Extraction timeout");
-		}, 45000);
+		}, EXTRACTION_TIMEOUT_MS);
 
-		// Send message to background script (not content script!)
 		chrome.runtime.sendMessage(
-			{ action: "extractSubscriptions", tabId: tab.id },
+			{ action: "extractSubscriptions", tabId: activeTab.id },
 			(response) => {
-				// Clear timeout if we got a response
 				if (timeoutId) {
 					clearTimeout(timeoutId);
 					timeoutId = null;
 				}
 
-				extractButton.disabled = false;
+				setExtractButtonDisabled(false);
 
 				if (chrome.runtime.lastError) {
-					console.error("Error:", chrome.runtime.lastError);
-					statusDiv.innerHTML =
+					console.error("[Popup] Extraction error:", chrome.runtime.lastError);
+					setSubscriptionStatus(
 						'<div class="status-text error">❌ Failed to extract:<br><small>' +
-						chrome.runtime.lastError.message +
-						"</small></div>";
+							chrome.runtime.lastError.message +
+							"</small></div>",
+					);
 					return;
 				}
 
 				if (response?.success) {
-					statusDiv.innerHTML = `<div class="status-text success">✅ Successfully extracted ${response.count} subscriptions!<br><small>Full extraction using advanced method</small></div>`;
+					setSubscriptionStatus(
+						`<div class="status-text success">✅ Successfully extracted ${response.count} subscriptions!<br><small>Full extraction using advanced method</small></div>`,
+					);
 					displaySubscriptionsFromStorage();
-				} else if (response) {
-					statusDiv.innerHTML =
-						'<div class="status-text error">❌ Extraction failed:<br><small>' +
-						(response.error || "Unknown error") +
-						"</small></div>";
-				} else {
-					statusDiv.innerHTML =
-						'<div class="status-text error">❌ No response from background script<br><small>Try reloading the extension</small></div>';
+					return;
 				}
+
+				if (response) {
+					setSubscriptionStatus(
+						'<div class="status-text error">❌ Extraction failed:<br><small>' +
+							(response.error || "Unknown error") +
+							"</small></div>",
+					);
+					return;
+				}
+
+				setSubscriptionStatus(
+					'<div class="status-text error">❌ No response from background script<br><small>Try reloading the extension</small></div>',
+				);
 			},
 		);
 	});
 }
 
-// Display subscriptions from storage
+function renderSubscriptions(channels) {
+	const subscriptionsList = getElement("subscriptionsList");
+	if (!subscriptionsList) {
+		return;
+	}
+
+	subscriptionsList.innerHTML = channels
+		.map((channel) => {
+			const meta = [channel.channelPath, channel.channelId]
+				.filter(Boolean)
+				.join(" • ");
+			return `
+				<div class="subscription-item">
+					<strong>${channel.name}</strong>
+					${meta ? `<div class="meta">${meta}</div>` : ""}
+				</div>
+			`;
+		})
+		.join("");
+}
+
 function displaySubscriptionsFromStorage() {
 	chrome.storage.local.get(["youtube_subscriptions"], (result) => {
-		const subscriptionsList = document.getElementById("subscriptionsList");
-		const subscriptionSection = document.getElementById("subscriptionSection");
-		const statusDiv = document.getElementById("subscriptionStatus");
-
-		if (!subscriptionsList) return;
-
-		const data = result.youtube_subscriptions;
-		const channels = (data?.channels || [])
+		const subscriptionData = result.youtube_subscriptions;
+		const channels = (subscriptionData?.channels || [])
 			.map((channel) => normalizeSubscriptionRecord(channel))
 			.filter(Boolean);
 
 		if (channels.length === 0) {
-			if (subscriptionSection) {
-				subscriptionSection.classList.remove("visible");
-			}
+			setSubscriptionSectionVisible(false);
 			return;
 		}
 
-		if (subscriptionSection) {
-			subscriptionSection.classList.add("visible");
+		setSubscriptionSectionVisible(true);
+		if (subscriptionData?.extracted) {
+			setSubscriptionStatus(
+				`<div class="status-text success">Loaded ${channels.length} subscriptions<br><small>Updated ${new Date(subscriptionData.extracted).toLocaleString()}</small></div>`,
+			);
 		}
-		if (statusDiv && data?.extracted) {
-			statusDiv.innerHTML = `<div class="status-text success">Loaded ${channels.length} subscriptions<br><small>Updated ${new Date(data.extracted).toLocaleString()}</small></div>`;
-		}
-		subscriptionsList.innerHTML = channels
-			.map((channel) => {
-				const meta = [channel.channelPath, channel.channelId]
-					.filter(Boolean)
-					.join(" • ");
-				return `
-					<div class="subscription-item">
-						<strong>${channel.name}</strong>
-						${meta ? `<div class="meta">${meta}</div>` : ""}
-					</div>
-				`;
-			})
-			.join("");
+		renderSubscriptions(channels);
 	});
 }
 
-// Add a new keyword
 function addKeyword() {
-	const input = document.getElementById("newKeyword");
-	const keyword = input.value.trim().toLowerCase();
-	if (keyword) {
-		chrome.storage.sync.get({ keywords: [] }, (result) => {
-			if (!result.keywords.includes(keyword)) {
-				const newKeywords = [...result.keywords, keyword];
-				chrome.storage.sync.set({ keywords: newKeywords }, () => {
-					displayKeywords(newKeywords);
-					input.value = "";
-				});
-			}
+	const keywordInput = getElement("newKeyword");
+	const keyword = keywordInput.value.trim().toLowerCase();
+	if (!keyword) {
+		return;
+	}
+
+	chrome.storage.sync.get(KEYWORD_STORAGE_DEFAULTS, (result) => {
+		if (result.keywords.includes(keyword)) {
+			return;
+		}
+
+		const keywords = [...result.keywords, keyword];
+		chrome.storage.sync.set({ keywords }, () => {
+			renderKeywords(keywords);
+			keywordInput.value = "";
 		});
+	});
+}
+
+function removeKeyword(keyword) {
+	chrome.storage.sync.get(KEYWORD_STORAGE_DEFAULTS, (result) => {
+		const keywords = result.keywords.filter(
+			(storedKeyword) => storedKeyword !== keyword,
+		);
+		chrome.storage.sync.set({ keywords }, () => {
+			renderKeywords(keywords);
+		});
+	});
+}
+
+function collectSettings() {
+	return {
+		viewsFilterEnabled: getCheckboxValue("viewsFilterEnabled"),
+		durationFilterEnabled: getCheckboxValue("durationFilterEnabled"),
+		keywordFilterEnabled: getCheckboxValue("keywordFilterEnabled"),
+		ageFilterEnabled: getCheckboxValue("ageFilterEnabled"),
+		englishOnlyTitles: getCheckboxValue("englishOnlyTitles"),
+		preserveSubscribedChannels: getCheckboxValue("preserveSubscribedChannels"),
+		minViews: getNumberValue("minViews", 0),
+		minDuration: getNumberValue("minDuration", 0),
+		maxDuration: getNumberValue("maxDuration", 0),
+		maxAgeYears: getNumberValue("maxAgeYears", 5),
+	};
+}
+
+function saveSettings() {
+	const settings = collectSettings();
+
+	chrome.storage.sync.get(KEYWORD_STORAGE_DEFAULTS, (result) => {
+		chrome.storage.sync.set(
+			{
+				...settings,
+				keywords: result.keywords,
+			},
+			() => {
+				const saveButton = getElement("saveSettings");
+				const originalText = saveButton.textContent;
+				saveButton.textContent = "Saved!";
+				setTimeout(() => {
+					saveButton.textContent = originalText;
+				}, 1500);
+			},
+		);
+	});
+}
+
+function renderFilteredVideos(videos) {
+	const filteredVideosList = getElement("filteredVideosList");
+	if (!filteredVideosList) {
+		return;
+	}
+
+	filteredVideosList.innerHTML = "";
+	for (const video of videos.slice(-100).reverse()) {
+		const videoElement = document.createElement("div");
+		videoElement.className = "filtered-video";
+		videoElement.innerHTML = `
+			<div>${video.title}</div>
+			<div class="reason">${video.reason}</div>
+		`;
+		filteredVideosList.appendChild(videoElement);
 	}
 }
 
-// Remove a keyword
-function removeKeyword(keyword) {
-	chrome.storage.sync.get({ keywords: [] }, (result) => {
-		const newKeywords = result.keywords.filter((k) => k !== keyword);
-		chrome.storage.sync.set({ keywords: newKeywords }, () => {
-			displayKeywords(newKeywords);
-		});
-	});
-}
-
-// Save all settings
-function saveSettings() {
-	const settings = {
-		viewsFilterEnabled: document.getElementById("viewsFilterEnabled").checked,
-		durationFilterEnabled: document.getElementById("durationFilterEnabled")
-			.checked,
-		keywordFilterEnabled: document.getElementById("keywordFilterEnabled")
-			.checked,
-		ageFilterEnabled: document.getElementById("ageFilterEnabled").checked,
-		englishOnlyTitles: document.getElementById("englishOnlyTitles").checked,
-		preserveSubscribedChannels: document.getElementById(
-			"preserveSubscribedChannels",
-		).checked,
-		minViews: parseInt(document.getElementById("minViews").value, 10) || 0,
-		minDuration:
-			parseInt(document.getElementById("minDuration").value, 10) || 0,
-		maxDuration:
-			parseInt(document.getElementById("maxDuration").value, 10) || 0,
-		maxAgeYears:
-			parseInt(document.getElementById("maxAgeYears").value, 10) || 5,
-	};
-
-	chrome.storage.sync.get({ keywords: [] }, (result) => {
-		settings.keywords = result.keywords;
-		chrome.storage.sync.set(settings, () => {
-			const saveButton = document.getElementById("saveSettings");
-			const originalText = saveButton.textContent;
-			saveButton.textContent = "Saved!";
-			setTimeout(() => {
-				saveButton.textContent = originalText;
-			}, 1500);
-		});
-	});
-}
-
-// Display filtered videos
 function displayFilteredVideos() {
 	chrome.storage.local.get(["filteredVideos"], (result) => {
-		const filteredVideosList = document.getElementById("filteredVideosList");
-		const videos = result.filteredVideos || [];
-
-		filteredVideosList.innerHTML = "";
-		videos
-			.slice(-100)
-			.reverse()
-			.forEach((video) => {
-				const videoElement = document.createElement("div");
-				videoElement.className = "filtered-video";
-				videoElement.innerHTML = `
-        <div>${video.title}</div>
-        <div class="reason">${video.reason}</div>
-      `;
-				filteredVideosList.appendChild(videoElement);
-			});
+		renderFilteredVideos(result.filteredVideos || []);
 	});
 }
 
-// Clear filtered videos history
 function clearFilteredVideos() {
 	chrome.storage.local.set({ filteredVideos: [] }, () => {
 		displayFilteredVideos();
 	});
 }
 
-// Update stats display
 function updateStats() {
-	chrome.storage.local.get(["filterStats", "filteredVideos"], (data) => {
-		const stats = data.filterStats || {
-			views: 0,
-			keywords: 0,
-			duration: 0,
-			age: 0,
-			language: 0,
-			total: 0,
+	chrome.storage.local.get(["filterStats"], (result) => {
+		const stats = {
+			...FILTER_STAT_DEFAULTS,
+			...(result.filterStats || {}),
 		};
 
-		document.getElementById("views-count").textContent = stats.views;
-		document.getElementById("keywords-count").textContent = stats.keywords;
-		document.getElementById("duration-count").textContent = stats.duration;
-		document.getElementById("age-count").textContent = stats.age;
-		document.getElementById("language-count").textContent = stats.language;
-		document.getElementById("total-count").textContent = stats.total;
-
-		// Update filtered videos list
-		displayFilteredVideos();
+		getElement("views-count").textContent = stats.views;
+		getElement("keywords-count").textContent = stats.keywords;
+		getElement("duration-count").textContent = stats.duration;
+		getElement("age-count").textContent = stats.age;
+		getElement("language-count").textContent = stats.language;
+		getElement("total-count").textContent = stats.total;
 	});
+
+	displayFilteredVideos();
 }
 
-// Initialize
-document.addEventListener("DOMContentLoaded", () => {
+function initializePopup() {
 	loadSettings();
 	updateStats();
 	displaySubscriptionsFromStorage();
-	setInterval(updateStats, 1000);
-	setInterval(displaySubscriptionsFromStorage, 2000);
 
-	// Add event listeners
-	document
-		.getElementById("saveSettings")
-		.addEventListener("click", saveSettings);
-	document
-		.getElementById("clearFilteredVideos")
-		.addEventListener("click", clearFilteredVideos);
-	document
-		.getElementById("addKeywordButton")
-		.addEventListener("click", addKeyword);
-	document
-		.getElementById("openSubscriptionsLink")
-		.addEventListener("click", openSubscriptionsPageLink);
-	document
-		.getElementById("extractSubscriptionsButton")
-		.addEventListener("click", extractSubscriptionsFromTab);
+	setInterval(updateStats, STATS_REFRESH_INTERVAL_MS);
+	setInterval(
+		displaySubscriptionsFromStorage,
+		SUBSCRIPTIONS_REFRESH_INTERVAL_MS,
+	);
 
-	// Make functions available globally for keyword removal
+	getElement("saveSettings").addEventListener("click", saveSettings);
+	getElement("clearFilteredVideos").addEventListener(
+		"click",
+		clearFilteredVideos,
+	);
+	getElement("addKeywordButton").addEventListener("click", addKeyword);
+	getElement("openSubscriptionsLink").addEventListener(
+		"click",
+		openSubscriptionsPageLink,
+	);
+	getElement("extractSubscriptionsButton").addEventListener(
+		"click",
+		extractSubscriptionsFromTab,
+	);
+
 	window.removeKeyword = removeKeyword;
-});
+}
+
+document.addEventListener("DOMContentLoaded", initializePopup);

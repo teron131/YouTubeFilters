@@ -5,6 +5,18 @@
  */
 
 const DURATION_BADGE_PATTERN = /^(?:\d+:)?\d{1,2}:\d{2}$/;
+const CHANNEL_PATH_PREFIXES = ["/@", "/channel/"];
+const WATCH_LINK_SELECTOR =
+	"a#thumbnail, a#video-title, a#video-title-link, a[href*='/watch']";
+const RENDERER_DATA_ACCESSORS = [
+	(element) => element?.data,
+	(element) => element?.__data?.data,
+	(element) => element?.__data?.content,
+	(element) => element?.__data?.config,
+	(element) => element?.__dataHost?.data,
+	(element) => element?.__dataHost?.__data?.data,
+	(element) => element?.__dataHost?.__data?.content,
+];
 
 function normalizeText(value) {
 	if (typeof value !== "string") {
@@ -88,8 +100,7 @@ function normalizeChannelPath(path) {
 		const url = new URL(path, window.location.origin);
 		const normalizedPath = url.pathname.replace(/\/+$/, "");
 		if (
-			normalizedPath.startsWith("/@") ||
-			normalizedPath.startsWith("/channel/")
+			CHANNEL_PATH_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))
 		) {
 			return normalizedPath;
 		}
@@ -171,9 +182,7 @@ function getVideoIdFromElement(element) {
 	}
 
 	const href = element
-		?.querySelector(
-			"a#thumbnail, a#video-title, a#video-title-link, a[href*='/watch']",
-		)
+		?.querySelector(WATCH_LINK_SELECTOR)
 		?.getAttribute("href");
 
 	if (!href) {
@@ -199,61 +208,48 @@ function extractFromYTInitialData() {
 }
 
 function getRendererDataCandidates(element) {
-	return [
-		element?.data,
-		element?.__data?.data,
-		element?.__data?.content,
-		element?.__data?.config,
-		element?.__dataHost?.data,
-		element?.__dataHost?.__data?.data,
-		element?.__dataHost?.__data?.content,
-	].filter(Boolean);
+	return RENDERER_DATA_ACCESSORS.map((getRendererData) =>
+		getRendererData(element),
+	).filter(Boolean);
 }
 
-function extractVideoFromRenderer(rendererData) {
-	if (!rendererData || typeof rendererData !== "object") {
-		return null;
-	}
-
-	const searchRenderer =
+function isSearchRenderer(rendererData) {
+	return Boolean(
 		rendererData?.videoId ||
-		(rendererData?.title &&
-			(rendererData?.lengthText ||
-				rendererData?.publishedTimeText ||
-				rendererData?.viewCountText ||
-				rendererData?.shortViewCountText ||
-				rendererData?.ownerText ||
-				rendererData?.longBylineText))
-			? rendererData
-			: null;
-	if (searchRenderer) {
-		const searchChannelInfo = getChannelInfoFromRuns(
-			searchRenderer.ownerText || searchRenderer.longBylineText,
-		);
-		return {
-			videoId: searchRenderer.videoId || null,
-			title: textFromNode(searchRenderer.title),
-			duration: normalizeDurationText(searchRenderer.lengthText),
-			viewCount: firstNonEmpty(
-				textFromNode(searchRenderer.viewCountText),
-				textFromNode(searchRenderer.shortViewCountText),
-			),
-			publishTime: textFromNode(searchRenderer.publishedTimeText),
-			channelName: firstNonEmpty(
-				textFromNode(searchRenderer.ownerText),
-				textFromNode(searchRenderer.longBylineText),
-			),
-			channelId: searchChannelInfo.channelId,
-			channelPath: searchChannelInfo.channelPath,
-		};
-	}
+			(rendererData?.title &&
+				(rendererData?.lengthText ||
+					rendererData?.publishedTimeText ||
+					rendererData?.viewCountText ||
+					rendererData?.shortViewCountText ||
+					rendererData?.ownerText ||
+					rendererData?.longBylineText)),
+	);
+}
 
-	const lockupViewModel =
-		rendererData?.content?.lockupViewModel || rendererData?.lockupViewModel;
-	if (!lockupViewModel) {
-		return null;
-	}
+function extractSearchVideo(rendererData) {
+	const searchChannelInfo = getChannelInfoFromRuns(
+		rendererData.ownerText || rendererData.longBylineText,
+	);
 
+	return {
+		videoId: rendererData.videoId || null,
+		title: textFromNode(rendererData.title),
+		duration: normalizeDurationText(rendererData.lengthText),
+		viewCount: firstNonEmpty(
+			textFromNode(rendererData.viewCountText),
+			textFromNode(rendererData.shortViewCountText),
+		),
+		publishTime: textFromNode(rendererData.publishedTimeText),
+		channelName: firstNonEmpty(
+			textFromNode(rendererData.ownerText),
+			textFromNode(rendererData.longBylineText),
+		),
+		channelId: searchChannelInfo.channelId,
+		channelPath: searchChannelInfo.channelPath,
+	};
+}
+
+function extractLockupVideo(lockupViewModel) {
 	const metadataRows =
 		lockupViewModel?.metadata?.lockupMetadataViewModel?.metadata
 			?.contentMetadataViewModel?.metadataRows || [];
@@ -280,6 +276,24 @@ function extractVideoFromRenderer(rendererData) {
 		channelId: homeChannelInfo.channelId,
 		channelPath: homeChannelInfo.channelPath,
 	};
+}
+
+function extractVideoFromRenderer(rendererData) {
+	if (!rendererData || typeof rendererData !== "object") {
+		return null;
+	}
+
+	if (isSearchRenderer(rendererData)) {
+		return extractSearchVideo(rendererData);
+	}
+
+	const lockupViewModel =
+		rendererData?.content?.lockupViewModel || rendererData?.lockupViewModel;
+	if (!lockupViewModel) {
+		return null;
+	}
+
+	return extractLockupVideo(lockupViewModel);
 }
 
 function getVideoDataForElement(element) {

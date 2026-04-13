@@ -81,6 +81,45 @@ function parseVideoAge(text) {
 const HAN_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
 const LATIN_LETTER_PATTERN = /[A-Za-z]/g;
 const ENGLISH_WORD_PATTERN = /\b[A-Za-z]{2,}\b/g;
+const VIEW_COUNT_PATTERN = /(\d+(?:[.,]\d+)?\s*[KMB]?)\s*views?/i;
+const NO_VIEWS_PATTERN = /No views?/i;
+const PUBLISH_TIME_PATTERN =
+	/(streamed\s+)?\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago/i;
+const DURATION_TEXT_PATTERN = /^(?:\d+:)?\d{1,2}:\d{2}$/;
+const CHANNEL_LINK_SELECTOR = "a[href^='/@'], a[href^='/channel/']";
+const TITLE_SELECTORS = [
+	"#video-title",
+	"a#video-title-link",
+	"#video-title-link",
+	"h3[title]",
+	".ytLockupMetadataViewModelHeadingReset",
+	"h3 a",
+	"yt-formatted-string#video-title",
+	"[aria-label]",
+];
+const DURATION_SELECTORS = [
+	"badge-shape .yt-badge-shape__text",
+	"yt-thumbnail-bottom-overlay-view-model badge-shape .yt-badge-shape__text",
+	".yt-badge-shape__text",
+	"yt-thumbnail-badge-view-model",
+	"ytd-thumbnail-overlay-time-status-renderer span",
+	"span.ytd-thumbnail-overlay-time-status-renderer",
+	"#time-status span",
+	".badge-style-type-simple",
+];
+const METADATA_TEXT_SELECTORS = [
+	"#metadata-line",
+	"ytd-video-meta-block",
+	"#channel-info",
+];
+const VIDEO_CARD_NODE_NAMES = new Set([
+	"YTD-VIDEO-RENDERER",
+	"YTD-RICH-ITEM-RENDERER",
+	"YTD-GRID-VIDEO-RENDERER",
+	"YT-LOCKUP-VIEW-MODEL",
+]);
+const SUBSCRIPTIONS_PAGE_PATH = "/feed/channels";
+const ENGLISH_ONLY_LEGACY_MODE = "enOnly";
 
 /**
  * Normalizes extracted UI text for pattern matching.
@@ -145,7 +184,7 @@ function isEnglishOnlyEnabled(settings) {
 		return settings.englishOnlyTitles;
 	}
 
-	return settings.languageFilterMode === "enOnly";
+	return settings.languageFilterMode === ENGLISH_ONLY_LEGACY_MODE;
 }
 
 function normalizeChannelPath(path) {
@@ -221,11 +260,7 @@ function buildSubscriptionLookup(channels) {
 }
 
 function isSubscribedChannel(videoData) {
-	const channelId =
-		typeof videoData.channelId === "string" &&
-		videoData.channelId.startsWith("UC")
-			? videoData.channelId
-			: getChannelIdFromPath(videoData.channelPath);
+	const channelId = getNormalizedChannelId(videoData);
 	const channelPath = normalizeChannelPath(
 		videoData.channelPath,
 	)?.toLowerCase();
@@ -243,14 +278,6 @@ const VIDEO_CARD_SELECTOR =
 const MAX_METADATA_RETRY_COUNT = 6;
 const METADATA_RETRY_DELAY_MS = 2000;
 const SETTLING_RESCAN_DELAYS_MS = [1500, 4000, 8000];
-
-/**
- * Filtering applies to supported YouTube pages, including Home.
- * @returns {boolean}
- */
-function shouldApplyHideFilters() {
-	return true;
-}
 
 /**
  * Returns whether hard hide filters are active for the current page type.
@@ -297,6 +324,13 @@ function resetProcessedVideoCards(root = document) {
 	}
 }
 
+function getNormalizedChannelId(videoData) {
+	return typeof videoData.channelId === "string" &&
+		videoData.channelId.startsWith("UC")
+		? videoData.channelId
+		: getChannelIdFromPath(videoData.channelPath);
+}
+
 function getContainingVideoCard(node) {
 	if (!(node instanceof Node)) {
 		return null;
@@ -309,6 +343,116 @@ function getContainingVideoCard(node) {
 	}
 
 	return node.parentElement?.closest?.(VIDEO_CARD_SELECTOR) || null;
+}
+
+function getFirstMatchingElement(root, selectors) {
+	for (const selector of selectors) {
+		const element = root.querySelector(selector);
+		if (element) {
+			return element;
+		}
+	}
+
+	return null;
+}
+
+function getMetadataText(videoElement) {
+	return normalizeText(
+		METADATA_TEXT_SELECTORS.map(
+			(selector) => videoElement.querySelector(selector)?.innerText,
+		)
+			.filter(Boolean)
+			.join(" "),
+	);
+}
+
+function extractDurationFromElement(videoElement) {
+	for (const selector of DURATION_SELECTORS) {
+		const text = normalizeText(
+			videoElement.querySelector(selector)?.textContent,
+		);
+		if (text && DURATION_TEXT_PATTERN.test(text)) {
+			return text;
+		}
+	}
+
+	const thumbnailLink = videoElement.querySelector(
+		"a#thumbnail, a[href*='/watch']",
+	);
+	const thumbnailText = normalizeText(thumbnailLink?.innerText);
+	return thumbnailText?.match(DURATION_TEXT_PATTERN)?.[0] || null;
+}
+
+function fillMetadataFromText(videoData, metadataText) {
+	if (!videoData.viewCount) {
+		videoData.viewCount =
+			extractMatch(metadataText, VIEW_COUNT_PATTERN) ||
+			extractMatch(metadataText, NO_VIEWS_PATTERN);
+	}
+
+	if (!videoData.publishTime) {
+		videoData.publishTime = extractMatch(metadataText, PUBLISH_TIME_PATTERN);
+	}
+}
+
+function fillMetadataFromFullText(videoData, fullText) {
+	if (!fullText) {
+		return;
+	}
+
+	if (!videoData.viewCount) {
+		const viewMatch = fullText.match(VIEW_COUNT_PATTERN);
+		if (viewMatch) {
+			videoData.viewCount = normalizeText(viewMatch[0]);
+		} else if (fullText.match(NO_VIEWS_PATTERN)) {
+			videoData.viewCount = "No views";
+		}
+	}
+
+	if (!videoData.publishTime) {
+		const timeMatch = fullText.match(PUBLISH_TIME_PATTERN);
+		if (timeMatch) {
+			videoData.publishTime = normalizeText(timeMatch[0]);
+		}
+	}
+}
+
+function fillChannelInfoFromLink(videoElement, videoData) {
+	const channelLink = videoElement.querySelector(CHANNEL_LINK_SELECTOR);
+	if (!channelLink) {
+		return;
+	}
+
+	if (!videoData.channelPath) {
+		videoData.channelPath = normalizeChannelPath(
+			channelLink.getAttribute("href"),
+		);
+	}
+	if (!videoData.channelId) {
+		videoData.channelId = getChannelIdFromPath(videoData.channelPath);
+	}
+	if (!videoData.channelName) {
+		videoData.channelName =
+			normalizeText(channelLink.textContent) ||
+			normalizeText(channelLink.getAttribute("title"));
+	}
+}
+
+function fillLockupChannelNameFromText(videoElement, videoData) {
+	if (
+		videoData.channelName ||
+		videoElement.tagName !== "YT-LOCKUP-VIEW-MODEL"
+	) {
+		return;
+	}
+
+	const lines = (videoElement.innerText || "")
+		.split("\n")
+		.map((line) => normalizeText(line))
+		.filter(Boolean);
+	if (lines.length >= 3) {
+		videoData.channelName = lines[2];
+	}
 }
 
 function queueVideoCardForReprocessing(videoElement) {
@@ -348,24 +492,17 @@ function extractVideoData(videoElement) {
 	};
 
 	try {
-		// Extract Video ID
 		if (!data.videoId) {
 			data.videoId =
 				window.YouTubeDataExtractor?.getVideoIdFromElement?.(videoElement) ||
 				null;
 		}
 
-		// Extract Title
 		if (!data.title) {
-			const titleElement =
-				videoElement.querySelector("#video-title") ||
-				videoElement.querySelector("a#video-title-link") ||
-				videoElement.querySelector("#video-title-link") ||
-				videoElement.querySelector("h3[title]") ||
-				videoElement.querySelector(".ytLockupMetadataViewModelHeadingReset") ||
-				videoElement.querySelector("h3 a") ||
-				videoElement.querySelector("yt-formatted-string#video-title") ||
-				videoElement.querySelector("[aria-label]");
+			const titleElement = getFirstMatchingElement(
+				videoElement,
+				TITLE_SELECTORS,
+			);
 
 			data.title =
 				normalizeText(titleElement?.textContent) ||
@@ -373,117 +510,14 @@ function extractVideoData(videoElement) {
 				normalizeText(titleElement?.getAttribute("aria-label"));
 		}
 
-		// Extract Duration (Modern YouTube 2025+ uses badge-shape custom elements)
 		if (!data.duration) {
-			const durationSelectors = [
-				"badge-shape .yt-badge-shape__text", // Modern layout (Home/Search)
-				"yt-thumbnail-bottom-overlay-view-model badge-shape .yt-badge-shape__text",
-				".yt-badge-shape__text",
-				"yt-thumbnail-badge-view-model",
-				"ytd-thumbnail-overlay-time-status-renderer span", // Legacy
-				"span.ytd-thumbnail-overlay-time-status-renderer",
-				"#time-status span",
-				".badge-style-type-simple",
-			];
-
-			for (const selector of durationSelectors) {
-				const element = videoElement.querySelector(selector);
-				const text = normalizeText(element?.textContent);
-				if (text && /^(?:\d+:)?\d{1,2}:\d{2}$/.test(text)) {
-					data.duration = text;
-					break;
-				}
-			}
+			data.duration = extractDurationFromElement(videoElement);
 		}
 
-		// Fallback: Use innerText from thumbnail link
-		if (!data.duration) {
-			const thumbLink = videoElement.querySelector(
-				"a#thumbnail, a[href*='/watch']",
-			);
-			if (thumbLink) {
-				const thumbText = thumbLink.innerText?.trim();
-				const timeMatch = thumbText?.match(/\d+:\d+/);
-				if (timeMatch) {
-					data.duration = timeMatch[0];
-				}
-			}
-		}
-
-		const metadataText = normalizeText(
-			[
-				videoElement.querySelector("#metadata-line")?.innerText,
-				videoElement.querySelector("ytd-video-meta-block")?.innerText,
-				videoElement.querySelector("#channel-info")?.innerText,
-			]
-				.filter(Boolean)
-				.join(" "),
-		);
-
-		// Extract view count
-		if (!data.viewCount) {
-			data.viewCount =
-				extractMatch(metadataText, /(\d+(?:[.,]\d+)?\s*[KMB]?)\s*views?/i) ||
-				extractMatch(metadataText, /No views?/i);
-		}
-
-		// Extract publish time
-		if (!data.publishTime) {
-			data.publishTime = extractMatch(
-				metadataText,
-				/(streamed\s+)?\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
-			);
-		}
-
-		// Final fallback: broad text parsing only when scoped metadata was absent.
-		const fullText = normalizeText(videoElement.innerText);
-
-		if (!data.viewCount && fullText) {
-			const viewMatch = fullText.match(/(\d+(?:[.,]\d+)?\s*[KMB]?)\s*views?/i);
-			if (viewMatch) {
-				data.viewCount = normalizeText(viewMatch[0]);
-			} else if (fullText.match(/No views?/i)) {
-				data.viewCount = "No views";
-			}
-		}
-
-		if (!data.publishTime && fullText) {
-			const timeMatch = fullText.match(
-				/(streamed\s+)?(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
-			);
-			if (timeMatch) {
-				data.publishTime = normalizeText(timeMatch[0]);
-			}
-		}
-
-		const channelLink = videoElement.querySelector(
-			"a[href^='/@'], a[href^='/channel/']",
-		);
-		if (channelLink) {
-			if (!data.channelPath) {
-				data.channelPath = normalizeChannelPath(
-					channelLink.getAttribute("href"),
-				);
-			}
-			if (!data.channelId) {
-				data.channelId = getChannelIdFromPath(data.channelPath);
-			}
-			if (!data.channelName) {
-				data.channelName =
-					normalizeText(channelLink.textContent) ||
-					normalizeText(channelLink.getAttribute("title"));
-			}
-		}
-
-		if (!data.channelName && videoElement.tagName === "YT-LOCKUP-VIEW-MODEL") {
-			const lines = (videoElement.innerText || "")
-				.split("\n")
-				.map((line) => normalizeText(line))
-				.filter(Boolean);
-			if (lines.length >= 3) {
-				data.channelName = lines[2];
-			}
-		}
+		fillMetadataFromText(data, getMetadataText(videoElement));
+		fillMetadataFromFullText(data, normalizeText(videoElement.innerText));
+		fillChannelInfoFromLink(videoElement, data);
+		fillLockupChannelNameFromText(videoElement, data);
 	} catch (error) {
 		console.warn("[Filter] Error extracting video data:", error);
 	}
@@ -514,12 +548,12 @@ function checkViewsFilter(videoData, settings) {
 	}
 
 	// Check if views are below threshold
-	const views = parseViewCount(videoData.viewCount);
-	if (views < settings.minViews) {
+	const viewCount = parseViewCount(videoData.viewCount);
+	if (viewCount < settings.minViews) {
 		return {
 			shouldFilter: true,
 			reason: "views",
-			details: `Low views: ${videoData.viewCount} (${views})`,
+			details: `Low views: ${videoData.viewCount} (${viewCount})`,
 		};
 	}
 
@@ -662,6 +696,41 @@ function hasIncompleteMetadata(videoData, settings) {
 	);
 }
 
+function getTriggeredFilter(videoData, settings) {
+	return [
+		checkViewsFilter(videoData, settings),
+		checkDurationFilter(videoData, settings),
+		checkAgeFilter(videoData, settings),
+		checkLanguageFilter(videoData, settings),
+		checkKeywordsFilter(videoData, settings),
+	].find((filterResult) => filterResult.shouldFilter);
+}
+
+function showVideoCard(videoElement) {
+	videoElement.style.display = "";
+	videoElement.style.opacity = "";
+	videoElement.style.pointerEvents = "";
+}
+
+function hideVideoCard(videoElement, reason) {
+	videoElement.style.display = "none";
+	videoElement.style.opacity = "";
+	videoElement.style.pointerEvents = "";
+	videoElement.setAttribute("data-filtered", "true");
+	videoElement.setAttribute("data-filter-reason", reason);
+}
+
+function updateFilterStats(currentStats) {
+	filterStats.views += currentStats.views;
+	filterStats.keywords += currentStats.keywords;
+	filterStats.duration += currentStats.duration;
+	filterStats.age += currentStats.age;
+	filterStats.language += currentStats.language;
+	filterStats.total += currentStats.total;
+
+	chrome.storage.local.set({ filterStats });
+}
+
 // ============================================================================
 // SECTION 4: FILTER APPLICATION
 // Main filtering orchestration and DOM manipulation
@@ -701,6 +770,10 @@ function scheduleSettlingRescans(reason) {
 		}, delayMs);
 		settlingRescanTimeouts.push(timeoutId);
 	}
+}
+
+function reloadSubscriptions(channels) {
+	subscribedChannels = buildSubscriptionLookup(channels || []);
 }
 
 function applySubscribedChannelState(videoElement, isSubscribed) {
@@ -781,26 +854,13 @@ function runAllFilters(forceFullScan = false) {
 	targetCards.forEach((videoElement) => {
 		const wasFiltered = videoElement.hasAttribute("data-filtered");
 
-		// Extract video data
 		const videoData = extractVideoData(videoElement);
 		const title = videoData.title || "Unknown title";
 		const isSubscribed = isSubscribedChannel(videoData);
-		applySubscribedChannelState(videoElement, isSubscribed, filterSettings);
+		applySubscribedChannelState(videoElement, isSubscribed);
 		applyTitleLanguageState(videoElement, videoData.titleLanguage);
 
-		// Apply each filter in order
-		const filters = shouldApplyHideFilters()
-			? [
-					checkViewsFilter(videoData, filterSettings),
-					checkDurationFilter(videoData, filterSettings),
-					checkAgeFilter(videoData, filterSettings),
-					checkLanguageFilter(videoData, filterSettings),
-					checkKeywordsFilter(videoData, filterSettings),
-				]
-			: [];
-
-		// Find first filter that triggers
-		const triggeredFilter = filters.find((f) => f.shouldFilter);
+		const triggeredFilter = getTriggeredFilter(videoData, filterSettings);
 		const shouldPreserveSubscribedVideo =
 			isSubscribed && filterSettings.preserveSubscribedChannels;
 		const retryCount = Number(videoElement.dataset.filterRetryCount || 0);
@@ -811,9 +871,7 @@ function runAllFilters(forceFullScan = false) {
 
 		if (shouldRetryForMetadata) {
 			videoElement.dataset.filterRetryCount = String(retryCount + 1);
-			videoElement.style.display = "";
-			videoElement.style.opacity = "";
-			videoElement.style.pointerEvents = "";
+			showVideoCard(videoElement);
 			incompleteCards += 1;
 			return;
 		}
@@ -821,19 +879,13 @@ function runAllFilters(forceFullScan = false) {
 		delete videoElement.dataset.filterRetryCount;
 
 		if (triggeredFilter && !shouldPreserveSubscribedVideo) {
-			videoElement.style.display = "none";
-			videoElement.style.opacity = "";
-			videoElement.style.pointerEvents = "";
-			videoElement.setAttribute("data-filtered", "true");
-			videoElement.setAttribute("data-filter-reason", triggeredFilter.reason);
+			hideVideoCard(videoElement, triggeredFilter.reason);
 			markVideoCardProcessed(videoElement);
 
-			// Update stats
 			currentStats[triggeredFilter.reason]++;
 			currentStats.total++;
 			newFilters = true;
 
-			// Store and log
 			storeFilteredVideo(title, triggeredFilter.details);
 			console.log(
 				`[Filter] ✓ ${triggeredFilter.reason}: Hidden "${title}" - ${triggeredFilter.details}`,
@@ -849,21 +901,12 @@ function runAllFilters(forceFullScan = false) {
 			videoElement.removeAttribute("data-filter-reason");
 		}
 
-		videoElement.style.display = "";
-		videoElement.style.opacity = "";
-		videoElement.style.pointerEvents = "";
+		showVideoCard(videoElement);
 		markVideoCardProcessed(videoElement);
 	});
 
-	// Update global stats
 	if (newFilters) {
-		filterStats.views += currentStats.views;
-		filterStats.keywords += currentStats.keywords;
-		filterStats.duration += currentStats.duration;
-		filterStats.age += currentStats.age;
-		filterStats.total += currentStats.total;
-
-		chrome.storage.local.set({ filterStats });
+		updateFilterStats(currentStats);
 		console.log(
 			`[Filter] Filtered ${currentStats.total} videos this run (${processedCount} new, ${alreadyFilteredCount} already filtered)`,
 		);
@@ -896,8 +939,7 @@ function runAllFilters(forceFullScan = false) {
 function init() {
 	console.log("[Filter] Initializing filter extension...");
 
-	// Skip filtering on subscriptions page - only subscription extractor runs there
-	if (location.href.includes("/feed/channels")) {
+	if (location.pathname.includes(SUBSCRIPTIONS_PAGE_PATH)) {
 		console.log(
 			"[Filter] Skipping filters on subscriptions page - subscription extractor only",
 		);
@@ -908,9 +950,7 @@ function init() {
 	chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
 		filterSettings = settings;
 		chrome.storage.local.get(["youtube_subscriptions"], (localData) => {
-			subscribedChannels = buildSubscriptionLookup(
-				localData.youtube_subscriptions?.channels || [],
-			);
+			reloadSubscriptions(localData.youtube_subscriptions?.channels);
 			console.log("[Filter] Settings loaded:", filterSettings);
 
 			resetProcessedVideoCards();
@@ -948,19 +988,11 @@ function init() {
 						}
 					});
 
-					return Array.from(mutation.addedNodes).some((node) => {
-						// Check if node itself is a video card
-						if (
-							node.nodeName === "YTD-VIDEO-RENDERER" ||
-							node.nodeName === "YTD-RICH-ITEM-RENDERER" ||
-							node.nodeName === "YTD-GRID-VIDEO-RENDERER" ||
-							node.nodeName === "YT-LOCKUP-VIEW-MODEL"
-						) {
-							return true;
-						}
-						// Or if it contains video cards
-						return node.querySelector?.(VIDEO_CARD_SELECTOR);
-					});
+					return Array.from(mutation.addedNodes).some(
+						(node) =>
+							VIDEO_CARD_NODE_NAMES.has(node.nodeName) ||
+							node.querySelector?.(VIDEO_CARD_SELECTOR),
+					);
 				});
 
 				if (hasNewContent) {
@@ -990,9 +1022,7 @@ function init() {
 
 	chrome.storage.onChanged.addListener((changes, areaName) => {
 		if (areaName === "local" && changes.youtube_subscriptions) {
-			subscribedChannels = buildSubscriptionLookup(
-				changes.youtube_subscriptions.newValue?.channels || [],
-			);
+			reloadSubscriptions(changes.youtube_subscriptions.newValue?.channels);
 			console.log("[Filter] Subscription list changed, re-running filters...");
 			resetProcessedVideoCards();
 			runAllFilters(true);

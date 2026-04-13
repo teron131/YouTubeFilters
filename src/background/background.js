@@ -1,55 +1,72 @@
-// Background service worker for YouTube Filter Extension
-// Handles subscription extraction using chrome.scripting API
+// Background service worker for YouTube Filter Extension.
+// Handles subscription extraction using chrome.scripting in the page context.
+
+const EXTRACT_SUBSCRIPTIONS_ACTION = "extractSubscriptions";
+const SUBSCRIPTIONS_STORAGE_KEY = "youtube_subscriptions";
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-	if (request.action === "extractSubscriptions") {
-		handleSubscriptionExtraction(request.tabId)
-			.then((result) => {
-				sendResponse({
-					success: true,
-					count: result.count,
-					channels: result.channels,
-				});
-			})
-			.catch((error) => {
-				console.error("[Background] Extraction error:", error);
-				sendResponse({ success: false, error: error.message });
-			});
-
-		return true; // Keep message channel open for async response
+	if (request.action !== EXTRACT_SUBSCRIPTIONS_ACTION) {
+		return undefined;
 	}
-});
 
-// Extract subscriptions by injecting script into MAIN world (page context)
-async function handleSubscriptionExtraction(tabId) {
-	try {
-		// Inject extraction script with full access to page-owned renderer data.
-		const results = await chrome.scripting.executeScript({
-			target: { tabId: tabId },
-			world: "MAIN", // Critical: Runs in page context, bypasses CSP
-			func: extractSubscriptionsInPageContext,
+	handleSubscriptionExtraction(request.tabId)
+		.then((result) => {
+			sendResponse({
+				success: true,
+				count: result.count,
+				channels: result.channels,
+			});
+		})
+		.catch((error) => {
+			console.error("[Background] Extraction error:", error);
+			sendResponse({ success: false, error: error.message });
 		});
 
-		if (!results || results.length === 0) {
-			throw new Error("No results from script execution");
-		}
+	return true;
+});
 
-		const result = results[0].result;
+function buildStoredSubscriptions(
+	channels,
+	extractedAt = new Date().toISOString(),
+) {
+	return {
+		extracted: extractedAt,
+		channels,
+		channelNames: channels.map((channel) => channel.name),
+		count: channels.length,
+	};
+}
 
-		// Store in Chrome storage
+async function runPageSubscriptionExtraction(tabId) {
+	const results = await chrome.scripting.executeScript({
+		target: { tabId },
+		world: "MAIN",
+		func: extractSubscriptionsInPageContext,
+	});
+
+	if (!results?.length) {
+		throw new Error("No results from script execution");
+	}
+
+	const pageResult = results[0].result;
+	if (!pageResult?.channels) {
+		throw new Error("No channels returned from page extraction");
+	}
+
+	return pageResult.channels;
+}
+
+async function handleSubscriptionExtraction(tabId) {
+	try {
+		const channels = await runPageSubscriptionExtraction(tabId);
 		await chrome.storage.local.set({
-			youtube_subscriptions: {
-				extracted: new Date().toISOString(),
-				channels: result.channels,
-				channelNames: result.channels.map((channel) => channel.name),
-				count: result.channels.length,
-			},
+			[SUBSCRIPTIONS_STORAGE_KEY]: buildStoredSubscriptions(channels),
 		});
 
 		return {
 			success: true,
-			count: result.channels.length,
-			channels: result.channels,
+			count: channels.length,
+			channels,
 		};
 	} catch (error) {
 		console.error("[Background] Extraction failed:", error);
@@ -57,8 +74,16 @@ async function handleSubscriptionExtraction(tabId) {
 	}
 }
 
-// This function runs in page context (MAIN world) with full access to window
+// This function runs in page context (MAIN world) with full access to window.
 async function extractSubscriptionsInPageContext() {
+	const CHANNEL_RENDERER_SELECTOR = "ytd-channel-renderer";
+	const CHANNEL_LINK_SELECTOR = "a[href^='/@'], a[href^='/channel/']";
+	const LOCAL_STORAGE_KEY = "youtube_subscriptions";
+	const MAX_SCROLL_PASSES = 45;
+	const STABLE_PASSES_NEEDED = 4;
+	const SCROLL_WAIT_MS = 900;
+	const SCROLL_RESTORE_WAIT_MS = 100;
+
 	function sleep(ms) {
 		return new Promise((resolve) => {
 			window.setTimeout(resolve, ms);
@@ -142,11 +167,7 @@ async function extractSubscriptionsInPageContext() {
 
 	function isPlausibleChannelName(name) {
 		const normalizedName = normalizeText(name);
-		if (!normalizedName) {
-			return false;
-		}
-
-		if (normalizedName.length > 120) {
+		if (!normalizedName || normalizedName.length > 120) {
 			return false;
 		}
 
@@ -226,12 +247,17 @@ async function extractSubscriptionsInPageContext() {
 		};
 	}
 
-	function getChannelRecordFromRenderer(renderer) {
-		const data =
+	function getRendererData(renderer) {
+		return (
 			renderer?.data ||
 			renderer?.__data?.data ||
 			renderer?.__dataHost?.data ||
-			null;
+			null
+		);
+	}
+
+	function getChannelRecordFromRenderer(renderer) {
+		const data = getRendererData(renderer);
 		const endpoint =
 			data?.navigationEndpoint ||
 			data?.longBylineText?.runs?.[0]?.navigationEndpoint ||
@@ -242,17 +268,14 @@ async function extractSubscriptionsInPageContext() {
 			name:
 				textFromNode(data?.title) ||
 				normalizeText(
-					renderer?.querySelector(
-						"#main-link, a[href^='/@'], a[href^='/channel/']",
-					)?.textContent,
+					renderer?.querySelector(`#main-link, ${CHANNEL_LINK_SELECTOR}`)
+						?.textContent,
 				),
 			channelId: data?.channelId || endpoint?.browseEndpoint?.browseId || null,
 			channelPath:
 				endpoint?.browseEndpoint?.canonicalBaseUrl ||
 				endpoint?.commandMetadata?.webCommandMetadata?.url ||
-				renderer
-					?.querySelector("a[href^='/@'], a[href^='/channel/']")
-					?.getAttribute("href") ||
+				renderer?.querySelector(CHANNEL_LINK_SELECTOR)?.getAttribute("href") ||
 				null,
 			description:
 				textFromNode(data?.descriptionSnippet) ||
@@ -261,135 +284,155 @@ async function extractSubscriptionsInPageContext() {
 	}
 
 	async function loadAllSubscriptionRenderers() {
-		const maxScrollPasses = 45;
-		const stablePassesNeeded = 4;
 		const originalScrollY = window.scrollY;
-		let stablePasses = 0;
-		let previousCount = 0;
+		let stablePassCount = 0;
+		let previousChannelCount = 0;
 		let previousScrollHeight = 0;
 
-		for (let pass = 0; pass < maxScrollPasses; pass++) {
-			const beforeCount = document.querySelectorAll(
-				"ytd-channel-renderer",
+		for (let passIdx = 0; passIdx < MAX_SCROLL_PASSES; passIdx += 1) {
+			const channelCountBeforeScroll = document.querySelectorAll(
+				CHANNEL_RENDERER_SELECTOR,
 			).length;
-			const beforeScrollHeight = document.documentElement.scrollHeight;
+			const scrollHeightBeforeScroll = document.documentElement.scrollHeight;
 
-			window.scrollTo(0, beforeScrollHeight);
-			await sleep(900);
+			window.scrollTo(0, scrollHeightBeforeScroll);
+			await sleep(SCROLL_WAIT_MS);
 
-			const afterCount = document.querySelectorAll(
-				"ytd-channel-renderer",
+			const channelCountAfterScroll = document.querySelectorAll(
+				CHANNEL_RENDERER_SELECTOR,
 			).length;
-			const afterScrollHeight = document.documentElement.scrollHeight;
+			const scrollHeightAfterScroll = document.documentElement.scrollHeight;
 
 			if (
-				afterCount === beforeCount &&
-				afterCount === previousCount &&
-				afterScrollHeight === beforeScrollHeight &&
-				afterScrollHeight === previousScrollHeight
+				channelCountAfterScroll === channelCountBeforeScroll &&
+				channelCountAfterScroll === previousChannelCount &&
+				scrollHeightAfterScroll === scrollHeightBeforeScroll &&
+				scrollHeightAfterScroll === previousScrollHeight
 			) {
-				stablePasses += 1;
+				stablePassCount += 1;
 			} else {
-				stablePasses = 0;
+				stablePassCount = 0;
 			}
 
-			previousCount = afterCount;
-			previousScrollHeight = afterScrollHeight;
+			previousChannelCount = channelCountAfterScroll;
+			previousScrollHeight = scrollHeightAfterScroll;
 
-			if (stablePasses >= stablePassesNeeded) {
+			if (stablePassCount >= STABLE_PASSES_NEEDED) {
 				break;
 			}
 		}
 
 		window.scrollTo(0, originalScrollY);
-		await sleep(100);
+		await sleep(SCROLL_RESTORE_WAIT_MS);
+	}
+
+	function getChannelAliases(channel) {
+		return [
+			channel.channelId,
+			channel.channelPath?.toLowerCase() || null,
+			channel.name?.toLowerCase() || null,
+		].filter(Boolean);
 	}
 
 	const channelsByKey = new Map();
+	const channelKeyByAlias = new Map();
 
 	function addChannel(channel) {
 		if (!channel) {
 			return;
 		}
 
-		const normalizedPath = channel.channelPath?.toLowerCase() || null;
-		const normalizedName = channel.name?.toLowerCase() || null;
-		const existingEntry = Array.from(channelsByKey.entries()).find(
-			([, existingChannel]) =>
-				(channel.channelId &&
-					existingChannel.channelId === channel.channelId) ||
-				(normalizedPath &&
-					existingChannel.channelPath?.toLowerCase() === normalizedPath) ||
-				(normalizedName &&
-					existingChannel.name?.toLowerCase() === normalizedName),
-		);
-		if (existingEntry) {
-			const [existingKey, existingChannel] = existingEntry;
-			channelsByKey.set(
-				existingKey,
-				mergeChannelRecords(existingChannel, channel),
-			);
+		const aliases = getChannelAliases(channel);
+		if (aliases.length === 0) {
 			return;
 		}
 
-		const key = channel.channelId || normalizedPath || normalizedName;
-		if (key) {
-			channelsByKey.set(key, channel);
+		const existingKey = aliases.find((alias) => channelKeyByAlias.has(alias));
+		const channelKey = existingKey
+			? channelKeyByAlias.get(existingKey)
+			: aliases[0];
+		const mergedChannel = channelsByKey.has(channelKey)
+			? mergeChannelRecords(channelsByKey.get(channelKey), channel)
+			: channel;
+
+		channelsByKey.set(channelKey, mergedChannel);
+		for (const alias of getChannelAliases(mergedChannel)) {
+			channelKeyByAlias.set(alias, channelKey);
+		}
+	}
+
+	function collectChannelsFromRenderers() {
+		try {
+			document
+				.querySelectorAll(CHANNEL_RENDERER_SELECTOR)
+				.forEach((renderer) => {
+					addChannel(getChannelRecordFromRenderer(renderer));
+				});
+		} catch (error) {
+			console.error("[Extract] Renderer extraction error:", error);
+		}
+	}
+
+	function collectChannelsFromLinks() {
+		if (channelsByKey.size > 0) {
+			return;
+		}
+
+		try {
+			document.querySelectorAll(CHANNEL_LINK_SELECTOR).forEach((link) => {
+				addChannel(
+					buildSubscriptionRecord({
+						name: link.textContent,
+						channelPath: link.getAttribute("href"),
+					}),
+				);
+			});
+		} catch (error) {
+			console.error("[Extract] Link fallback error:", error);
+		}
+	}
+
+	function sortChannels(channels) {
+		return channels.sort((left, right) =>
+			(left.name || left.channelPath || left.channelId || "").localeCompare(
+				right.name || right.channelPath || right.channelId || "",
+			),
+		);
+	}
+
+	function buildStoredSubscriptionsPayload(
+		channels,
+		extractedAt = new Date().toISOString(),
+	) {
+		return {
+			extracted: extractedAt,
+			channels,
+			channelNames: channels.map((channel) => channel.name),
+			count: channels.length,
+		};
+	}
+
+	function saveChannelsToLocalStorage(channels) {
+		try {
+			localStorage.setItem(
+				LOCAL_STORAGE_KEY,
+				JSON.stringify(buildStoredSubscriptionsPayload(channels)),
+			);
+		} catch (error) {
+			console.warn("[Extract] localStorage save failed:", error);
 		}
 	}
 
 	await loadAllSubscriptionRenderers();
+	collectChannelsFromRenderers();
+	collectChannelsFromLinks();
 
-	try {
-		document.querySelectorAll("ytd-channel-renderer").forEach((renderer) => {
-			addChannel(getChannelRecordFromRenderer(renderer));
-		});
-	} catch (e) {
-		console.error("[Extract] Renderer extraction error:", e);
-	}
-
-	// Fallback: harvest channel links that appear in the subscriptions nav/contents.
-	if (channelsByKey.size === 0) {
-		try {
-			document
-				.querySelectorAll("a[href^='/@'], a[href^='/channel/']")
-				.forEach((link) => {
-					addChannel(
-						buildSubscriptionRecord({
-							name: link.textContent,
-							channelPath: link.getAttribute("href"),
-						}),
-					);
-				});
-		} catch (e) {
-			console.error("[Extract] Link fallback error:", e);
-		}
-	}
-
-	const result = Array.from(channelsByKey.values()).sort((left, right) =>
-		(left.name || left.channelPath || left.channelId || "").localeCompare(
-			right.name || right.channelPath || right.channelId || "",
-		),
-	);
-
-	// Save to localStorage for backup
-	try {
-		localStorage.setItem(
-			"youtube_subscriptions",
-			JSON.stringify({
-				extracted: new Date().toISOString(),
-				channels: result,
-				channelNames: result.map((channel) => channel.name),
-				count: result.length,
-			}),
-		);
-	} catch (e) {
-		console.warn("[Extract] localStorage save failed:", e);
-	}
+	const channels = sortChannels(Array.from(channelsByKey.values()));
+	saveChannelsToLocalStorage(channels);
 
 	return {
 		success: true,
-		channels: result,
-		count: result.length,
+		channels,
+		count: channels.length,
 	};
 }
