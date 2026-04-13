@@ -112,12 +112,34 @@ const VIDEO_CARD_SELECTOR =
 	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer";
 
 /**
- * Returns whether client-side sorting is enabled.
+ * Sorting has been removed for this extension.
+ * @param {typeof DEFAULT_SETTINGS} _settings
+ * @returns {boolean}
+ */
+function isSortEnabled(_settings) {
+	return false;
+}
+
+/**
+ * Filtering applies to supported YouTube pages, including Home.
+ * @returns {boolean}
+ */
+function shouldApplyHideFilters() {
+	return true;
+}
+
+/**
+ * Returns whether hard hide filters are active for the current page type.
  * @param {typeof DEFAULT_SETTINGS} settings
  * @returns {boolean}
  */
-function isSortEnabled(settings) {
-	return Boolean(settings.sortEnabled && settings.sortMode !== "none");
+function hasActiveHideFilters(settings) {
+	return Boolean(
+		settings.viewsFilterEnabled ||
+			settings.durationFilterEnabled ||
+			settings.keywordFilterEnabled ||
+			settings.ageFilterEnabled,
+	);
 }
 
 /**
@@ -129,7 +151,11 @@ function stageVideoCardsForSort(root = document) {
 		return;
 	}
 
-	const videoCards = root.querySelectorAll?.(VIDEO_CARD_SELECTOR) || [];
+	const videoCards = [];
+	if (root.matches?.(VIDEO_CARD_SELECTOR)) {
+		videoCards.push(root);
+	}
+	videoCards.push(...(root.querySelectorAll?.(VIDEO_CARD_SELECTOR) || []));
 	for (const videoElement of videoCards) {
 		if (
 			videoElement.hasAttribute("data-filtered") ||
@@ -179,6 +205,8 @@ function resetProcessedVideoCards(root = document) {
 		delete videoElement.dataset.sortValue;
 		videoElement.style.display = "";
 		videoElement.style.visibility = "";
+		videoElement.style.opacity = "";
+		videoElement.style.pointerEvents = "";
 	}
 }
 
@@ -403,12 +431,6 @@ function checkViewsFilter(videoData, settings) {
 		return { shouldFilter: false };
 	}
 
-	// Home recommendations are too structurally inconsistent for aggressive
-	// low-view filtering. Keep Home visible and rely on sorting there instead.
-	if (location.pathname === "/") {
-		return { shouldFilter: false };
-	}
-
 	// Missing counts are common on some Home cards and ad-like items.
 	// Don't treat them as low-view videos; only filter when we have a real count.
 	if (!videoData.viewCount) {
@@ -496,7 +518,7 @@ function checkAgeFilter(videoData, settings) {
 function checkKeywordsFilter(videoData, settings) {
 	const bannedKeywords = settings.keywords || settings.bannedKeywords || [];
 
-	if (!settings.keywordsFilterEnabled || bannedKeywords.length === 0) {
+	if (!settings.keywordFilterEnabled || bannedKeywords.length === 0) {
 		return { shouldFilter: false };
 	}
 
@@ -554,13 +576,7 @@ function runAllFilters(forceFullScan = false) {
 	console.log("[Filter] Running all filters...");
 	const startedAt = performance.now();
 
-	if (
-		!filterSettings.viewsFilterEnabled &&
-		!filterSettings.durationFilterEnabled &&
-		!filterSettings.keywordsFilterEnabled &&
-		!filterSettings.ageFilterEnabled &&
-		!isSortEnabled(filterSettings)
-	) {
+	if (!hasActiveHideFilters(filterSettings) && !isSortEnabled(filterSettings)) {
 		console.log("[Filter] All filters disabled, skipping");
 		return;
 	}
@@ -600,20 +616,23 @@ function runAllFilters(forceFullScan = false) {
 		const title = videoData.title || "Unknown title";
 
 		// Apply each filter in order
-		const filters = [
-			checkViewsFilter(videoData, filterSettings),
-			checkDurationFilter(videoData, filterSettings),
-			checkAgeFilter(videoData, filterSettings),
-			checkKeywordsFilter(videoData, filterSettings),
-		];
+		const filters = shouldApplyHideFilters()
+			? [
+					checkViewsFilter(videoData, filterSettings),
+					checkDurationFilter(videoData, filterSettings),
+					checkAgeFilter(videoData, filterSettings),
+					checkKeywordsFilter(videoData, filterSettings),
+				]
+			: [];
 
 		// Find first filter that triggers
 		const triggeredFilter = filters.find((f) => f.shouldFilter);
 
 		if (triggeredFilter) {
-			// Hide video
 			videoElement.style.display = "none";
 			videoElement.style.visibility = "";
+			videoElement.style.opacity = "";
+			videoElement.style.pointerEvents = "";
 			videoElement.setAttribute("data-filtered", "true");
 			videoElement.setAttribute("data-filter-reason", triggeredFilter.reason);
 			videoElement.removeAttribute("data-sort-pending");
@@ -641,6 +660,8 @@ function runAllFilters(forceFullScan = false) {
 		}
 
 		videoElement.style.display = "";
+		videoElement.style.opacity = "";
+		videoElement.style.pointerEvents = "";
 		markVideoCardProcessed(videoElement, videoData, filterSettings);
 		revealVideoCard(videoElement);
 	});
@@ -770,20 +791,26 @@ function init() {
 
 	// Re-run filters on YouTube navigation (SPA)
 	let lastUrl = location.href;
-	new MutationObserver(() => {
-		const currentUrl = location.href;
-		if (currentUrl !== lastUrl) {
-			lastUrl = currentUrl;
-			console.log("[Filter] Page navigation detected, re-running filters...");
-			resetProcessedVideoCards();
-			stageVideoCardsForSort();
-			setTimeout(() => runAllFilters(true), 1500);
-		}
-	}).observe(document.querySelector("title"), {
-		subtree: true,
-		characterData: true,
-		childList: true,
-	});
+	const navigationObserverTarget =
+		document.querySelector("title") ||
+		document.head ||
+		document.documentElement;
+	if (navigationObserverTarget) {
+		new MutationObserver(() => {
+			const currentUrl = location.href;
+			if (currentUrl !== lastUrl) {
+				lastUrl = currentUrl;
+				console.log("[Filter] Page navigation detected, re-running filters...");
+				resetProcessedVideoCards();
+				stageVideoCardsForSort();
+				setTimeout(() => runAllFilters(true), 1500);
+			}
+		}).observe(navigationObserverTarget, {
+			subtree: true,
+			characterData: true,
+			childList: true,
+		});
+	}
 
 	// Backup: Also re-run filters on scroll (for infinite scroll)
 	let scrollTimeout = null;

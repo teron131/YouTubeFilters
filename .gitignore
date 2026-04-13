@@ -1,6 +1,5 @@
 .DS_Store
-.cursor/*
-*.html
+.playwright-cli/
 
 # Nestjs specific
 /dist
