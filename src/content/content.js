@@ -200,6 +200,8 @@ function isSubscribedChannel(videoData) {
 
 const VIDEO_CARD_SELECTOR =
 	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model";
+const MAX_METADATA_RETRY_COUNT = 4;
+const METADATA_RETRY_DELAY_MS = 1500;
 
 /**
  * Sorting has been removed for this extension.
@@ -294,6 +296,7 @@ function resetProcessedVideoCards(root = document) {
 		videoElement.removeAttribute("data-filter-reason");
 		videoElement.removeAttribute("data-subscribed-channel");
 		videoElement.removeAttribute("data-sort-pending");
+		delete videoElement.dataset.filterRetryCount;
 		delete videoElement.dataset.sortValue;
 		videoElement.style.display = "";
 		videoElement.style.visibility = "";
@@ -669,6 +672,26 @@ function checkKeywordsFilter(videoData, settings) {
 	return { shouldFilter: false };
 }
 
+function hasIncompleteMetadata(videoData, settings) {
+	const maxAgeYears = settings.maxAgeYears ?? settings.maxAge ?? 0;
+	const bannedKeywords = settings.keywords || settings.bannedKeywords || [];
+
+	return Boolean(
+		(settings.viewsFilterEnabled &&
+			settings.minViews > 0 &&
+			!videoData.viewCount) ||
+			(settings.durationFilterEnabled &&
+				(settings.minDuration || settings.maxDuration) &&
+				!videoData.duration) ||
+			(settings.ageFilterEnabled &&
+				maxAgeYears > 0 &&
+				!videoData.publishTime) ||
+			(settings.keywordFilterEnabled &&
+				bannedKeywords.length > 0 &&
+				!videoData.title),
+	);
+}
+
 // ============================================================================
 // SECTION 4: FILTER APPLICATION
 // Main filtering orchestration and DOM manipulation
@@ -678,6 +701,7 @@ function checkKeywordsFilter(videoData, settings) {
 let filterSettings = DEFAULT_SETTINGS;
 const filterStats = { views: 0, keywords: 0, duration: 0, age: 0, total: 0 };
 let subscribedChannels = createEmptySubscriptionLookup();
+let metadataRetryTimeout = null;
 
 function applySubscribedChannelState(videoElement, isSubscribed, settings) {
 	if (isSubscribed) {
@@ -738,6 +762,7 @@ function runAllFilters(forceFullScan = false) {
 		total: 0,
 	};
 	let newFilters = false;
+	let incompleteCards = 0;
 
 	// Find all video card elements
 	const videoCards = Array.from(document.querySelectorAll(VIDEO_CARD_SELECTOR));
@@ -779,6 +804,23 @@ function runAllFilters(forceFullScan = false) {
 		const triggeredFilter = filters.find((f) => f.shouldFilter);
 		const shouldPreserveSubscribedVideo =
 			isSubscribed && filterSettings.preserveSubscribedChannels;
+		const retryCount = Number(videoElement.dataset.filterRetryCount || 0);
+		const shouldRetryForMetadata =
+			!triggeredFilter &&
+			hasIncompleteMetadata(videoData, filterSettings) &&
+			retryCount < MAX_METADATA_RETRY_COUNT;
+
+		if (shouldRetryForMetadata) {
+			videoElement.dataset.filterRetryCount = String(retryCount + 1);
+			videoElement.style.display = "";
+			videoElement.style.opacity = "";
+			videoElement.style.pointerEvents = "";
+			revealVideoCard(videoElement);
+			incompleteCards += 1;
+			return;
+		}
+
+		delete videoElement.dataset.filterRetryCount;
 
 		if (triggeredFilter && !shouldPreserveSubscribedVideo) {
 			videoElement.style.display = "none";
@@ -840,6 +882,16 @@ function runAllFilters(forceFullScan = false) {
 		`[Filter] Filtering complete in ${Math.round(performance.now() - startedAt)}ms. Total stats:`,
 		filterStats,
 	);
+
+	if (incompleteCards > 0) {
+		clearTimeout(metadataRetryTimeout);
+		metadataRetryTimeout = setTimeout(() => {
+			console.log(
+				`[Filter] Retrying ${incompleteCards} card(s) with incomplete metadata...`,
+			);
+			runAllFilters();
+		}, METADATA_RETRY_DELAY_MS);
+	}
 }
 
 // ============================================================================
