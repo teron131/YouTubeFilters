@@ -119,6 +119,7 @@ const VIDEO_CARD_NODE_NAMES = new Set([
 	"YT-LOCKUP-VIEW-MODEL",
 ]);
 const SUBSCRIPTIONS_PAGE_PATH = "/feed/channels";
+const CHANNEL_PAGE_PREFIXES = ["/@", "/channel/", "/c/", "/user/"];
 const ENGLISH_ONLY_LEGACY_MODE = "enOnly";
 
 /**
@@ -203,6 +204,42 @@ function normalizeChannelPath(path) {
 		}
 	} catch {
 		return null;
+	}
+
+	return null;
+}
+
+function normalizePathname(pathname = location.pathname) {
+	if (typeof pathname !== "string") {
+		return "/";
+	}
+
+	const normalizedPath = pathname.replace(/\/+$/, "");
+	return normalizedPath || "/";
+}
+
+function isSubscriptionsPage(pathname = location.pathname) {
+	return normalizePathname(pathname).startsWith(SUBSCRIPTIONS_PAGE_PATH);
+}
+
+function isChannelPage(pathname = location.pathname) {
+	const normalizedPath = normalizePathname(pathname);
+	return CHANNEL_PAGE_PREFIXES.some((prefix) =>
+		normalizedPath.startsWith(prefix),
+	);
+}
+
+function shouldSkipFilteringForPage(pathname = location.pathname) {
+	return isSubscriptionsPage(pathname) || isChannelPage(pathname);
+}
+
+function getFilteringSkipReason(pathname = location.pathname) {
+	if (isSubscriptionsPage(pathname)) {
+		return "subscriptions page";
+	}
+
+	if (isChannelPage(pathname)) {
+		return "channel page";
 	}
 
 	return null;
@@ -759,6 +796,10 @@ function clearSettlingRescans() {
 }
 
 function scheduleSettlingRescans(reason) {
+	if (shouldSkipFilteringForPage()) {
+		return;
+	}
+
 	clearSettlingRescans();
 
 	for (const delayMs of SETTLING_RESCAN_DELAYS_MS) {
@@ -818,6 +859,15 @@ function storeFilteredVideo(title, reason) {
 function runAllFilters(forceFullScan = false) {
 	console.log("[Filter] Running all filters...");
 	const startedAt = performance.now();
+
+	const skipReason = getFilteringSkipReason();
+	if (skipReason) {
+		clearTimeout(metadataRetryTimeout);
+		clearSettlingRescans();
+		resetProcessedVideoCards();
+		console.log(`[Filter] Skipping filters on ${skipReason}`);
+		return;
+	}
 
 	if (!hasActiveHideFilters(filterSettings)) {
 		console.log("[Filter] All filters disabled, skipping");
@@ -939,13 +989,6 @@ function runAllFilters(forceFullScan = false) {
 function init() {
 	console.log("[Filter] Initializing filter extension...");
 
-	if (location.pathname.includes(SUBSCRIPTIONS_PAGE_PATH)) {
-		console.log(
-			"[Filter] Skipping filters on subscriptions page - subscription extractor only",
-		);
-		return;
-	}
-
 	// Load settings and start filtering
 	chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
 		filterSettings = settings;
@@ -955,9 +998,15 @@ function init() {
 
 			resetProcessedVideoCards();
 
-			// Run initial filter
-			setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
-			scheduleSettlingRescans("initial load");
+			if (shouldSkipFilteringForPage()) {
+				console.log(
+					`[Filter] Initial page is ${getFilteringSkipReason()} - observers enabled, filtering disabled`,
+				);
+			} else {
+				// Run initial filter
+				setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
+				scheduleSettlingRescans("initial load");
+			}
 
 			// Set up MutationObserver for dynamically loaded content
 			let filterTimeout = null;
