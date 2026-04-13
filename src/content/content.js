@@ -200,8 +200,9 @@ function isSubscribedChannel(videoData) {
 
 const VIDEO_CARD_SELECTOR =
 	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model";
-const MAX_METADATA_RETRY_COUNT = 4;
-const METADATA_RETRY_DELAY_MS = 1500;
+const MAX_METADATA_RETRY_COUNT = 6;
+const METADATA_RETRY_DELAY_MS = 2000;
+const SETTLING_RESCAN_DELAYS_MS = [1500, 4000, 8000];
 
 /**
  * Sorting has been removed for this extension.
@@ -305,6 +306,33 @@ function resetProcessedVideoCards(root = document) {
 		videoElement.style.boxShadow = "";
 		videoElement.style.borderRadius = "";
 		videoElement.style.background = "";
+	}
+}
+
+function getContainingVideoCard(node) {
+	if (!(node instanceof Node)) {
+		return null;
+	}
+
+	if (node.nodeType === Node.ELEMENT_NODE) {
+		return node.matches?.(VIDEO_CARD_SELECTOR)
+			? node
+			: node.closest?.(VIDEO_CARD_SELECTOR) || null;
+	}
+
+	return node.parentElement?.closest?.(VIDEO_CARD_SELECTOR) || null;
+}
+
+function queueVideoCardForReprocessing(videoElement) {
+	if (!videoElement) {
+		return;
+	}
+
+	videoElement.removeAttribute("data-filter-processed");
+	delete videoElement.dataset.filterRetryCount;
+
+	if (!videoElement.hasAttribute("data-filtered")) {
+		revealVideoCard(videoElement);
 	}
 }
 
@@ -702,6 +730,29 @@ let filterSettings = DEFAULT_SETTINGS;
 const filterStats = { views: 0, keywords: 0, duration: 0, age: 0, total: 0 };
 let subscribedChannels = createEmptySubscriptionLookup();
 let metadataRetryTimeout = null;
+let settlingRescanTimeouts = [];
+
+function clearSettlingRescans() {
+	for (const timeoutId of settlingRescanTimeouts) {
+		clearTimeout(timeoutId);
+	}
+
+	settlingRescanTimeouts = [];
+}
+
+function scheduleSettlingRescans(reason) {
+	clearSettlingRescans();
+
+	for (const delayMs of SETTLING_RESCAN_DELAYS_MS) {
+		const timeoutId = setTimeout(() => {
+			console.log(
+				`[Filter] Running settling rescan after ${delayMs}ms (${reason})...`,
+			);
+			runAllFilters(true);
+		}, delayMs);
+		settlingRescanTimeouts.push(timeoutId);
+	}
+}
 
 function applySubscribedChannelState(videoElement, isSubscribed, settings) {
 	if (isSubscribed) {
@@ -927,18 +978,35 @@ function init() {
 
 			// Run initial filter
 			setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
+			scheduleSettlingRescans("initial load");
 
 			// Set up MutationObserver for dynamically loaded content
 			let filterTimeout = null;
 			const observer = new MutationObserver((mutations) => {
 				const hasNewContent = mutations.some((mutation) => {
+					if (mutation.type === "characterData") {
+						const videoCard = getContainingVideoCard(mutation.target);
+						if (videoCard) {
+							queueVideoCardForReprocessing(videoCard);
+							return true;
+						}
+
+						return false;
+					}
+
 					Array.from(mutation.addedNodes).forEach((node) => {
 						if (node.nodeType === Node.ELEMENT_NODE) {
 							if (node.matches?.(VIDEO_CARD_SELECTOR)) {
+								queueVideoCardForReprocessing(node);
 								stageVideoCardsForSort(node);
 								return;
 							}
 
+							node
+								.querySelectorAll?.(VIDEO_CARD_SELECTOR)
+								.forEach((videoCard) => {
+									queueVideoCardForReprocessing(videoCard);
+								});
 							stageVideoCardsForSort(node);
 						}
 					});
@@ -964,6 +1032,7 @@ function init() {
 					filterTimeout = setTimeout(() => {
 						console.log("[Filter] New videos detected, re-running filters...");
 						runAllFilters();
+						scheduleSettlingRescans("content update");
 					}, 800); // Batch multiple additions
 				}
 			});
@@ -973,6 +1042,7 @@ function init() {
 				observer.observe(contentRoot, {
 					childList: true,
 					subtree: true,
+					characterData: true,
 				});
 				console.log("[Filter] Observer started");
 			} else {
@@ -990,6 +1060,7 @@ function init() {
 			resetProcessedVideoCards();
 			stageVideoCardsForSort();
 			runAllFilters(true);
+			scheduleSettlingRescans("subscription update");
 			return;
 		}
 
@@ -1007,6 +1078,7 @@ function init() {
 			resetProcessedVideoCards();
 			stageVideoCardsForSort();
 			runAllFilters(true);
+			scheduleSettlingRescans("settings change");
 		});
 	});
 
@@ -1024,7 +1096,9 @@ function init() {
 				console.log("[Filter] Page navigation detected, re-running filters...");
 				resetProcessedVideoCards();
 				stageVideoCardsForSort();
+				clearSettlingRescans();
 				setTimeout(() => runAllFilters(true), 1500);
+				scheduleSettlingRescans("navigation");
 			}
 		}).observe(navigationObserverTarget, {
 			subtree: true,
@@ -1050,6 +1124,7 @@ function init() {
 					);
 					lastVideoCount = currentVideoCount;
 					runAllFilters();
+					scheduleSettlingRescans("scroll growth");
 				}
 			}, 1000); // Wait 1s after scroll stops
 		},
