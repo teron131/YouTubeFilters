@@ -36,3 +36,17 @@ These notes are reference-only and capture the YouTube structures verified in a 
 - Search page inspected: `https://www.youtube.com/results?search_query=javascript`
 - Seed watch page used to populate anonymous Home feed: `https://www.youtube.com/watch?v=EerdGm-ehJQ`
 - Google sign-in was rejected in the automated DevTools browser with the "This browser or app may not be secure" flow, so anonymous public pages are the reliable inspection path for this repo.
+- In the extension content script, do not rely on `window.ytInitialData` being readable. Chrome's isolated world makes that unreliable here, so the production path should stay DOM-first unless a page-script bridge is added deliberately.
+
+## Sorting Notes
+
+- YouTube loads recommendations progressively, so this repo can only sort the currently rendered window of cards.
+- The low-risk approach is:
+  - hide newly added cards with `visibility: hidden`
+  - extract structured metadata from live renderer data
+  - sort sibling cards within their current parent container
+  - reveal them after filtering/sorting completes
+- This is suitable for visible batches on Home/Search pages and is much less brittle than trying to intercept YouTube network responses or rebuild the full feed before render.
+- Missing view counts are not treated as a filter match anymore because Home cards often lack complete metadata while still being legitimate videos.
+- Low-view filtering is disabled on the Home feed for now. Home uses sorting, while Search/watch-adjacent layouts can still use the parsed view-count threshold more safely.
+- Normal scrolling should only process newly staged cards. Full rescans are reserved for initial load, SPA navigation, and settings changes.
