@@ -94,7 +94,7 @@ function extractSubscriptionsFromTab() {
 
 	extractButton.disabled = true;
 	statusDiv.innerHTML =
-		'<div class="status-text">⏳ Extracting subscriptions...<br><small>Using advanced method for full extraction</small></div>';
+		'<div class="status-text">⏳ Extracting subscriptions...<br><small>Scrolling to load the full subscriptions list before saving.</small></div>';
 
 	// Set a timeout to prevent hanging forever
 	let timeoutId = null;
@@ -119,13 +119,13 @@ function extractSubscriptionsFromTab() {
 			return;
 		}
 
-		// Set 10 second timeout
+		// Allow time for the page to lazy-load the full subscriptions list.
 		timeoutId = setTimeout(() => {
 			extractButton.disabled = false;
 			statusDiv.innerHTML =
 				'<div class="status-text error">❌ Extraction timeout<br><small>Try reloading the page and extension</small></div>';
 			console.error("[Popup] Extraction timeout");
-		}, 10000);
+		}, 45000);
 
 		// Send message to background script (not content script!)
 		chrome.runtime.sendMessage(

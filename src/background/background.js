@@ -58,7 +58,13 @@ async function handleSubscriptionExtraction(tabId) {
 }
 
 // This function runs in page context (MAIN world) with full access to window
-function extractSubscriptionsInPageContext() {
+async function extractSubscriptionsInPageContext() {
+	function sleep(ms) {
+		return new Promise((resolve) => {
+			window.setTimeout(resolve, ms);
+		});
+	}
+
 	function normalizeText(value) {
 		if (typeof value !== "string") {
 			return null;
@@ -134,13 +140,55 @@ function extractSubscriptionsInPageContext() {
 		return normalizedPath.slice(2);
 	}
 
+	function isPlausibleChannelName(name) {
+		const normalizedName = normalizeText(name);
+		if (!normalizedName) {
+			return false;
+		}
+
+		if (normalizedName.length > 120) {
+			return false;
+		}
+
+		return !(
+			normalizedName.includes("subscribers") ||
+			normalizedName.includes("Subscribe") ||
+			normalizedName.includes("Subscribed")
+		);
+	}
+
+	function chooseBetterName(existingName, nextName) {
+		if (!isPlausibleChannelName(existingName)) {
+			return isPlausibleChannelName(nextName) ? normalizeText(nextName) : null;
+		}
+
+		if (!isPlausibleChannelName(nextName)) {
+			return normalizeText(existingName);
+		}
+
+		const normalizedExisting = normalizeText(existingName);
+		const normalizedNext = normalizeText(nextName);
+		if (!normalizedExisting) {
+			return normalizedNext;
+		}
+		if (!normalizedNext) {
+			return normalizedExisting;
+		}
+
+		return normalizedNext.length < normalizedExisting.length
+			? normalizedNext
+			: normalizedExisting;
+	}
+
 	function buildSubscriptionRecord({
 		name,
 		channelId,
 		channelPath,
 		description,
 	}) {
-		const normalizedName = normalizeText(name);
+		const normalizedName = isPlausibleChannelName(name)
+			? normalizeText(name)
+			: null;
 		const normalizedPath = normalizeChannelPath(channelPath);
 		const finalChannelId =
 			typeof channelId === "string" && channelId.startsWith("UC")
@@ -167,7 +215,7 @@ function extractSubscriptionsInPageContext() {
 
 	function mergeChannelRecords(existingChannel, nextChannel) {
 		return {
-			name: nextChannel.name || existingChannel.name || null,
+			name: chooseBetterName(existingChannel.name, nextChannel.name),
 			channelId: nextChannel.channelId || existingChannel.channelId || null,
 			channelPath:
 				nextChannel.channelPath || existingChannel.channelPath || null,
@@ -212,6 +260,51 @@ function extractSubscriptionsInPageContext() {
 		});
 	}
 
+	async function loadAllSubscriptionRenderers() {
+		const maxScrollPasses = 45;
+		const stablePassesNeeded = 4;
+		const originalScrollY = window.scrollY;
+		let stablePasses = 0;
+		let previousCount = 0;
+		let previousScrollHeight = 0;
+
+		for (let pass = 0; pass < maxScrollPasses; pass++) {
+			const beforeCount = document.querySelectorAll(
+				"ytd-channel-renderer",
+			).length;
+			const beforeScrollHeight = document.documentElement.scrollHeight;
+
+			window.scrollTo(0, beforeScrollHeight);
+			await sleep(900);
+
+			const afterCount = document.querySelectorAll(
+				"ytd-channel-renderer",
+			).length;
+			const afterScrollHeight = document.documentElement.scrollHeight;
+
+			if (
+				afterCount === beforeCount &&
+				afterCount === previousCount &&
+				afterScrollHeight === beforeScrollHeight &&
+				afterScrollHeight === previousScrollHeight
+			) {
+				stablePasses += 1;
+			} else {
+				stablePasses = 0;
+			}
+
+			previousCount = afterCount;
+			previousScrollHeight = afterScrollHeight;
+
+			if (stablePasses >= stablePassesNeeded) {
+				break;
+			}
+		}
+
+		window.scrollTo(0, originalScrollY);
+		await sleep(100);
+	}
+
 	const channelsByKey = new Map();
 
 	function addChannel(channel) {
@@ -245,6 +338,8 @@ function extractSubscriptionsInPageContext() {
 		}
 	}
 
+	await loadAllSubscriptionRenderers();
+
 	try {
 		document.querySelectorAll("ytd-channel-renderer").forEach((renderer) => {
 			addChannel(getChannelRecordFromRenderer(renderer));
@@ -254,19 +349,21 @@ function extractSubscriptionsInPageContext() {
 	}
 
 	// Fallback: harvest channel links that appear in the subscriptions nav/contents.
-	try {
-		document
-			.querySelectorAll("a[href^='/@'], a[href^='/channel/']")
-			.forEach((link) => {
-				addChannel(
-					buildSubscriptionRecord({
-						name: link.textContent,
-						channelPath: link.getAttribute("href"),
-					}),
-				);
-			});
-	} catch (e) {
-		console.error("[Extract] Link fallback error:", e);
+	if (channelsByKey.size === 0) {
+		try {
+			document
+				.querySelectorAll("a[href^='/@'], a[href^='/channel/']")
+				.forEach((link) => {
+					addChannel(
+						buildSubscriptionRecord({
+							name: link.textContent,
+							channelPath: link.getAttribute("href"),
+						}),
+					);
+				});
+		} catch (e) {
+			console.error("[Extract] Link fallback error:", e);
+		}
 	}
 
 	const result = Array.from(channelsByKey.values()).sort((left, right) =>
