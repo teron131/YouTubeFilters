@@ -628,7 +628,7 @@ function checkAgeFilter(videoData, settings) {
 	}
 
 	const videoAge = parseVideoAge(videoData.publishTime);
-	if (videoAge > maxAgeYears) {
+	if (videoAge >= maxAgeYears) {
 		return {
 			shouldFilter: true,
 			reason: "age",
