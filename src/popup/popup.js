@@ -14,8 +14,6 @@ function loadSettings() {
 		);
 		document.getElementById("preserveSubscribedChannels").checked =
 			settings.preserveSubscribedChannels;
-		document.getElementById("highlightSubscribedChannels").checked =
-			settings.highlightSubscribedChannels;
 		document.getElementById("minViews").value = settings.minViews;
 		document.getElementById("minDuration").value = settings.minDuration;
 		document.getElementById("maxDuration").value = settings.maxDuration;
@@ -250,9 +248,6 @@ function saveSettings() {
 		englishOnlyTitles: document.getElementById("englishOnlyTitles").checked,
 		preserveSubscribedChannels: document.getElementById(
 			"preserveSubscribedChannels",
-		).checked,
-		highlightSubscribedChannels: document.getElementById(
-			"highlightSubscribedChannels",
 		).checked,
 		minViews: parseInt(document.getElementById("minViews").value, 10) || 0,
 		minDuration:

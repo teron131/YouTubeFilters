@@ -245,15 +245,6 @@ const METADATA_RETRY_DELAY_MS = 2000;
 const SETTLING_RESCAN_DELAYS_MS = [1500, 4000, 8000];
 
 /**
- * Sorting has been removed for this extension.
- * @param {typeof DEFAULT_SETTINGS} _settings
- * @returns {boolean}
- */
-function isSortEnabled(_settings) {
-	return false;
-}
-
-/**
  * Filtering applies to supported YouTube pages, including Home.
  * @returns {boolean}
  */
@@ -272,62 +263,20 @@ function hasActiveHideFilters(settings) {
 			settings.durationFilterEnabled ||
 			settings.keywordFilterEnabled ||
 			settings.ageFilterEnabled ||
-			isEnglishOnlyEnabled(settings) ||
-			settings.highlightSubscribedChannels,
+			isEnglishOnlyEnabled(settings),
 	);
 }
 
 /**
- * Marks cards as pending so they stay hidden until the next sort pass completes.
- * @param {ParentNode} [root=document]
- */
-function stageVideoCardsForSort(root = document) {
-	if (!isSortEnabled(filterSettings)) {
-		return;
-	}
-
-	const videoCards = [];
-	if (root.matches?.(VIDEO_CARD_SELECTOR)) {
-		videoCards.push(root);
-	}
-	videoCards.push(...(root.querySelectorAll?.(VIDEO_CARD_SELECTOR) || []));
-	for (const videoElement of videoCards) {
-		if (
-			videoElement.hasAttribute("data-filtered") ||
-			videoElement.hasAttribute("data-filter-processed") ||
-			videoElement.hasAttribute("data-sort-pending")
-		) {
-			continue;
-		}
-
-		videoElement.setAttribute("data-sort-pending", "true");
-		videoElement.style.visibility = "hidden";
-	}
-}
-
-/**
- * Removes any temporary hiding used while a card is waiting to be sorted.
+ * Marks a card as processed.
  * @param {HTMLElement} videoElement
  */
-function revealVideoCard(videoElement) {
-	videoElement.removeAttribute("data-sort-pending");
-	videoElement.style.visibility = "";
-}
-
-/**
- * Marks a card as processed and stores its last sort key so later sort passes
- * don't need to re-extract metadata for every existing card.
- * @param {HTMLElement} videoElement
- * @param {ReturnType<typeof extractVideoData>} videoData
- * @param {typeof DEFAULT_SETTINGS} settings
- */
-function markVideoCardProcessed(videoElement, videoData, settings) {
+function markVideoCardProcessed(videoElement) {
 	videoElement.setAttribute("data-filter-processed", "true");
-	videoElement.dataset.sortValue = String(getSortValue(videoData, settings));
 }
 
 /**
- * Clears transient filter/sort markers so a future run can do a full rescan.
+ * Clears transient filter markers so a future run can do a full rescan.
  * @param {ParentNode} [root=document]
  */
 function resetProcessedVideoCards(root = document) {
@@ -337,12 +286,9 @@ function resetProcessedVideoCards(root = document) {
 		videoElement.removeAttribute("data-filtered");
 		videoElement.removeAttribute("data-filter-reason");
 		videoElement.removeAttribute("data-subscribed-channel");
-		videoElement.removeAttribute("data-sort-pending");
 		delete videoElement.dataset.titleLanguage;
 		delete videoElement.dataset.filterRetryCount;
-		delete videoElement.dataset.sortValue;
 		videoElement.style.display = "";
-		videoElement.style.visibility = "";
 		videoElement.style.opacity = "";
 		videoElement.style.pointerEvents = "";
 		videoElement.style.boxShadow = "";
@@ -372,80 +318,6 @@ function queueVideoCardForReprocessing(videoElement) {
 
 	videoElement.removeAttribute("data-filter-processed");
 	delete videoElement.dataset.filterRetryCount;
-
-	if (!videoElement.hasAttribute("data-filtered")) {
-		revealVideoCard(videoElement);
-	}
-}
-
-/**
- * Computes a sortable numeric value for the current sort mode.
- * @param {ReturnType<typeof extractVideoData>} videoData
- * @param {typeof DEFAULT_SETTINGS} settings
- * @returns {number}
- */
-function getSortValue(videoData, settings) {
-	switch (settings.sortMode) {
-		case "newestFirst":
-			return -parseVideoAge(videoData.publishTime);
-		case "shortestFirst":
-			return parseDuration(videoData.duration);
-		case "longestFirst":
-			return -parseDuration(videoData.duration);
-		default:
-			return -parseViewCount(videoData.viewCount);
-	}
-}
-
-/**
- * Reorders cards within each parent container using the selected sort mode.
- * @param {HTMLElement[]} videoCards
- * @param {typeof DEFAULT_SETTINGS} settings
- */
-function sortVisibleVideoCards(videoCards, settings) {
-	if (!isSortEnabled(settings) || videoCards.length < 2) {
-		return;
-	}
-
-	const groups = new Map();
-	videoCards.forEach((videoElement, originalIndex) => {
-		if (videoElement.hasAttribute("data-filtered")) {
-			return;
-		}
-
-		const parent = videoElement.parentElement;
-		if (!parent) {
-			return;
-		}
-
-		if (!groups.has(parent)) {
-			groups.set(parent, []);
-		}
-		groups.get(parent).push({
-			element: videoElement,
-			originalIndex,
-			sortValue: Number(videoElement.dataset.sortValue || 0),
-		});
-	});
-
-	for (const groupEntries of groups.values()) {
-		if (groupEntries.length < 2) {
-			continue;
-		}
-
-		groupEntries.sort((left, right) => {
-			const valueDiff = left.sortValue - right.sortValue;
-			if (valueDiff !== 0) {
-				return valueDiff;
-			}
-
-			return left.originalIndex - right.originalIndex;
-		});
-
-		for (const entry of groupEntries) {
-			entry.element.parentElement?.appendChild(entry.element);
-		}
-	}
 }
 
 // ============================================================================
@@ -831,23 +703,12 @@ function scheduleSettlingRescans(reason) {
 	}
 }
 
-function applySubscribedChannelState(videoElement, isSubscribed, settings) {
+function applySubscribedChannelState(videoElement, isSubscribed) {
 	if (isSubscribed) {
 		videoElement.setAttribute("data-subscribed-channel", "true");
 	} else {
 		videoElement.removeAttribute("data-subscribed-channel");
 	}
-
-	if (isSubscribed && settings.highlightSubscribedChannels) {
-		videoElement.style.boxShadow = "0 0 0 2px rgba(47, 143, 99, 0.65)";
-		videoElement.style.borderRadius = "14px";
-		videoElement.style.background = "rgba(47, 143, 99, 0.08)";
-		return;
-	}
-
-	videoElement.style.boxShadow = "";
-	videoElement.style.borderRadius = "";
-	videoElement.style.background = "";
 }
 
 function applyTitleLanguageState(videoElement, titleLanguage) {
@@ -885,7 +746,7 @@ function runAllFilters(forceFullScan = false) {
 	console.log("[Filter] Running all filters...");
 	const startedAt = performance.now();
 
-	if (!hasActiveHideFilters(filterSettings) && !isSortEnabled(filterSettings)) {
+	if (!hasActiveHideFilters(filterSettings)) {
 		console.log("[Filter] All filters disabled, skipping");
 		return;
 	}
@@ -906,9 +767,7 @@ function runAllFilters(forceFullScan = false) {
 	const videoCards = Array.from(document.querySelectorAll(VIDEO_CARD_SELECTOR));
 	const targetCards = videoCards.filter(
 		(videoElement) =>
-			forceFullScan ||
-			videoElement.hasAttribute("data-sort-pending") ||
-			!videoElement.hasAttribute("data-filter-processed"),
+			forceFullScan || !videoElement.hasAttribute("data-filter-processed"),
 	);
 
 	console.log(
@@ -955,7 +814,6 @@ function runAllFilters(forceFullScan = false) {
 			videoElement.style.display = "";
 			videoElement.style.opacity = "";
 			videoElement.style.pointerEvents = "";
-			revealVideoCard(videoElement);
 			incompleteCards += 1;
 			return;
 		}
@@ -964,13 +822,11 @@ function runAllFilters(forceFullScan = false) {
 
 		if (triggeredFilter && !shouldPreserveSubscribedVideo) {
 			videoElement.style.display = "none";
-			videoElement.style.visibility = "";
 			videoElement.style.opacity = "";
 			videoElement.style.pointerEvents = "";
 			videoElement.setAttribute("data-filtered", "true");
 			videoElement.setAttribute("data-filter-reason", triggeredFilter.reason);
-			videoElement.removeAttribute("data-sort-pending");
-			markVideoCardProcessed(videoElement, videoData, filterSettings);
+			markVideoCardProcessed(videoElement);
 
 			// Update stats
 			currentStats[triggeredFilter.reason]++;
@@ -996,13 +852,8 @@ function runAllFilters(forceFullScan = false) {
 		videoElement.style.display = "";
 		videoElement.style.opacity = "";
 		videoElement.style.pointerEvents = "";
-		markVideoCardProcessed(videoElement, videoData, filterSettings);
-		revealVideoCard(videoElement);
+		markVideoCardProcessed(videoElement);
 	});
-
-	if (targetCards.length > 0) {
-		sortVisibleVideoCards(videoCards, filterSettings);
-	}
 
 	// Update global stats
 	if (newFilters) {
@@ -1063,7 +914,6 @@ function init() {
 			console.log("[Filter] Settings loaded:", filterSettings);
 
 			resetProcessedVideoCards();
-			stageVideoCardsForSort();
 
 			// Run initial filter
 			setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
@@ -1087,7 +937,6 @@ function init() {
 						if (node.nodeType === Node.ELEMENT_NODE) {
 							if (node.matches?.(VIDEO_CARD_SELECTOR)) {
 								queueVideoCardForReprocessing(node);
-								stageVideoCardsForSort(node);
 								return;
 							}
 
@@ -1096,7 +945,6 @@ function init() {
 								.forEach((videoCard) => {
 									queueVideoCardForReprocessing(videoCard);
 								});
-							stageVideoCardsForSort(node);
 						}
 					});
 
@@ -1147,7 +995,6 @@ function init() {
 			);
 			console.log("[Filter] Subscription list changed, re-running filters...");
 			resetProcessedVideoCards();
-			stageVideoCardsForSort();
 			runAllFilters(true);
 			scheduleSettlingRescans("subscription update");
 			return;
@@ -1165,7 +1012,6 @@ function init() {
 			filterSettings = settings;
 			console.log("[Filter] Settings changed, re-running filters...");
 			resetProcessedVideoCards();
-			stageVideoCardsForSort();
 			runAllFilters(true);
 			scheduleSettlingRescans("settings change");
 		});
@@ -1184,7 +1030,6 @@ function init() {
 				lastUrl = currentUrl;
 				console.log("[Filter] Page navigation detected, re-running filters...");
 				resetProcessedVideoCards();
-				stageVideoCardsForSort();
 				clearSettlingRescans();
 				setTimeout(() => runAllFilters(true), 1500);
 				scheduleSettlingRescans("navigation");
