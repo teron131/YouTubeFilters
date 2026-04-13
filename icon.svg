@@ -1,0 +1,40 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="playGradient" x1="208" y1="188" x2="765" y2="639" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F08356"/>
+      <stop offset="1" stop-color="#DF643B"/>
+    </linearGradient>
+    <filter id="softShadow" x="40" y="46" width="944" height="944" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="18"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.122 0 0 0 0 0.106 0 0 0 0 0.086 0 0 0 0.12 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#softShadow)">
+    <rect x="78" y="78" width="868" height="868" rx="236" fill="#FFFFFF" stroke="#1F1B16" stroke-width="34"/>
+
+    <path d="M152 296C194.491 238.136 244.465 199.735 301 177" stroke="#F6DCD4" stroke-width="26" stroke-linecap="round"/>
+    <path d="M745 278C793.751 307.726 831.376 348.245 864 401" stroke="#F8C75A" stroke-width="26" stroke-linecap="round"/>
+
+    <rect x="182" y="202" width="660" height="466" rx="156" fill="url(#playGradient)"/>
+
+    <path d="M425 352.857C425 325.706 455.043 309.253 477.96 323.887L670.103 446.601C691.296 460.131 691.296 491.869 670.103 505.399L477.96 628.113C455.043 642.747 425 626.294 425 599.143V352.857Z" fill="#FFF8EF"/>
+
+    <g stroke="#1F1B16" stroke-width="34" stroke-linecap="round">
+      <path d="M178 748H782"/>
+      <path d="M178 850H782"/>
+    </g>
+
+    <g>
+      <circle cx="588" cy="748" r="59" fill="#FFFFFF" stroke="#1F1B16" stroke-width="24"/>
+      <circle cx="364" cy="850" r="59" fill="#F8C75A" stroke="#1F1B16" stroke-width="24"/>
+      <circle cx="364" cy="850" r="21" fill="#FFFFFF"/>
+    </g>
+  </g>
+</svg>
