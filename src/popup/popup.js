@@ -9,6 +9,9 @@ function loadSettings() {
 			settings.keywordFilterEnabled;
 		document.getElementById("ageFilterEnabled").checked =
 			settings.ageFilterEnabled;
+		document.getElementById("englishOnlyTitles").checked = Boolean(
+			settings.englishOnlyTitles,
+		);
 		document.getElementById("preserveSubscribedChannels").checked =
 			settings.preserveSubscribedChannels;
 		document.getElementById("highlightSubscribedChannels").checked =
@@ -244,6 +247,7 @@ function saveSettings() {
 		keywordFilterEnabled: document.getElementById("keywordFilterEnabled")
 			.checked,
 		ageFilterEnabled: document.getElementById("ageFilterEnabled").checked,
+		englishOnlyTitles: document.getElementById("englishOnlyTitles").checked,
 		preserveSubscribedChannels: document.getElementById(
 			"preserveSubscribedChannels",
 		).checked,
@@ -309,6 +313,7 @@ function updateStats() {
 			keywords: 0,
 			duration: 0,
 			age: 0,
+			language: 0,
 			total: 0,
 		};
 
@@ -316,6 +321,7 @@ function updateStats() {
 		document.getElementById("keywords-count").textContent = stats.keywords;
 		document.getElementById("duration-count").textContent = stats.duration;
 		document.getElementById("age-count").textContent = stats.age;
+		document.getElementById("language-count").textContent = stats.language;
 		document.getElementById("total-count").textContent = stats.total;
 
 		// Update filtered videos list

@@ -4,6 +4,7 @@ const DEFAULT_SETTINGS = {
 	durationFilterEnabled: true,
 	keywordFilterEnabled: true,
 	ageFilterEnabled: true,
+	englishOnlyTitles: false,
 	preserveSubscribedChannels: true,
 	highlightSubscribedChannels: false,
 	sortEnabled: false,

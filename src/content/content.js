@@ -78,6 +78,10 @@ function parseVideoAge(text) {
 	return match ? parseInt(match[1], 10) : 0;
 }
 
+const HAN_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
+const LATIN_LETTER_PATTERN = /[A-Za-z]/g;
+const ENGLISH_WORD_PATTERN = /\b[A-Za-z]{2,}\b/g;
+
 /**
  * Normalizes extracted UI text for pattern matching.
  * @param {string | null | undefined} text
@@ -106,6 +110,42 @@ function extractMatch(text, pattern) {
 
 	const match = normalized.match(pattern);
 	return match ? normalizeText(match[0]) : null;
+}
+
+function detectTitleLanguage(title) {
+	const normalizedTitle = normalizeText(title);
+	if (!normalizedTitle) {
+		return "unknown";
+	}
+
+	const hanCharacterCount =
+		normalizedTitle.match(HAN_CHARACTER_PATTERN)?.length || 0;
+	const latinLetterCount =
+		normalizedTitle.match(LATIN_LETTER_PATTERN)?.length || 0;
+	const englishWordCount =
+		normalizedTitle.match(ENGLISH_WORD_PATTERN)?.length || 0;
+
+	if (hanCharacterCount === 0 && latinLetterCount === 0) {
+		return "unknown";
+	}
+
+	if (hanCharacterCount >= 2) {
+		return "zh";
+	}
+
+	if (englishWordCount >= 1 || latinLetterCount >= 4) {
+		return "en";
+	}
+
+	return "unknown";
+}
+
+function isEnglishOnlyEnabled(settings) {
+	if (typeof settings.englishOnlyTitles === "boolean") {
+		return settings.englishOnlyTitles;
+	}
+
+	return settings.languageFilterMode === "enOnly";
 }
 
 function normalizeChannelPath(path) {
@@ -232,6 +272,7 @@ function hasActiveHideFilters(settings) {
 			settings.durationFilterEnabled ||
 			settings.keywordFilterEnabled ||
 			settings.ageFilterEnabled ||
+			isEnglishOnlyEnabled(settings) ||
 			settings.highlightSubscribedChannels,
 	);
 }
@@ -297,6 +338,7 @@ function resetProcessedVideoCards(root = document) {
 		videoElement.removeAttribute("data-filter-reason");
 		videoElement.removeAttribute("data-subscribed-channel");
 		videoElement.removeAttribute("data-sort-pending");
+		delete videoElement.dataset.titleLanguage;
 		delete videoElement.dataset.filterRetryCount;
 		delete videoElement.dataset.sortValue;
 		videoElement.style.display = "";
@@ -423,6 +465,7 @@ function extractVideoData(videoElement) {
 		window.YouTubeDataExtractor?.getVideoDataForElement(videoElement) || {};
 	const data = {
 		title: structuredData.title || null,
+		titleLanguage: null,
 		viewCount: structuredData.viewCount || null,
 		duration: structuredData.duration || null,
 		publishTime: structuredData.publishTime || null,
@@ -573,6 +616,8 @@ function extractVideoData(videoElement) {
 		console.warn("[Filter] Error extracting video data:", error);
 	}
 
+	data.titleLanguage = detectTitleLanguage(data.title);
+
 	return data;
 }
 
@@ -700,6 +745,30 @@ function checkKeywordsFilter(videoData, settings) {
 	return { shouldFilter: false };
 }
 
+function checkLanguageFilter(videoData, settings) {
+	if (!isEnglishOnlyEnabled(settings)) {
+		return { shouldFilter: false };
+	}
+
+	if (!videoData.titleLanguage || videoData.titleLanguage === "unknown") {
+		return {
+			shouldFilter: true,
+			reason: "language",
+			details: "Title language: unknown (English only mode)",
+		};
+	}
+
+	if (videoData.titleLanguage !== "en") {
+		return {
+			shouldFilter: true,
+			reason: "language",
+			details: `Title language: ${videoData.titleLanguage} (English only mode)`,
+		};
+	}
+
+	return { shouldFilter: false };
+}
+
 function hasIncompleteMetadata(videoData, settings) {
 	const maxAgeYears = settings.maxAgeYears ?? settings.maxAge ?? 0;
 	const bannedKeywords = settings.keywords || settings.bannedKeywords || [];
@@ -716,7 +785,8 @@ function hasIncompleteMetadata(videoData, settings) {
 				!videoData.publishTime) ||
 			(settings.keywordFilterEnabled &&
 				bannedKeywords.length > 0 &&
-				!videoData.title),
+				!videoData.title) ||
+			(isEnglishOnlyEnabled(settings) && !videoData.title),
 	);
 }
 
@@ -727,7 +797,14 @@ function hasIncompleteMetadata(videoData, settings) {
 
 // Global state
 let filterSettings = DEFAULT_SETTINGS;
-const filterStats = { views: 0, keywords: 0, duration: 0, age: 0, total: 0 };
+const filterStats = {
+	views: 0,
+	keywords: 0,
+	duration: 0,
+	age: 0,
+	language: 0,
+	total: 0,
+};
 let subscribedChannels = createEmptySubscriptionLookup();
 let metadataRetryTimeout = null;
 let settlingRescanTimeouts = [];
@@ -773,6 +850,15 @@ function applySubscribedChannelState(videoElement, isSubscribed, settings) {
 	videoElement.style.background = "";
 }
 
+function applyTitleLanguageState(videoElement, titleLanguage) {
+	if (titleLanguage && titleLanguage !== "unknown") {
+		videoElement.dataset.titleLanguage = titleLanguage;
+		return;
+	}
+
+	delete videoElement.dataset.titleLanguage;
+}
+
 /**
  * Stores filtered video information for history tracking
  */
@@ -810,6 +896,7 @@ function runAllFilters(forceFullScan = false) {
 		keywords: 0,
 		duration: 0,
 		age: 0,
+		language: 0,
 		total: 0,
 	};
 	let newFilters = false;
@@ -840,6 +927,7 @@ function runAllFilters(forceFullScan = false) {
 		const title = videoData.title || "Unknown title";
 		const isSubscribed = isSubscribedChannel(videoData);
 		applySubscribedChannelState(videoElement, isSubscribed, filterSettings);
+		applyTitleLanguageState(videoElement, videoData.titleLanguage);
 
 		// Apply each filter in order
 		const filters = shouldApplyHideFilters()
@@ -847,6 +935,7 @@ function runAllFilters(forceFullScan = false) {
 					checkViewsFilter(videoData, filterSettings),
 					checkDurationFilter(videoData, filterSettings),
 					checkAgeFilter(videoData, filterSettings),
+					checkLanguageFilter(videoData, filterSettings),
 					checkKeywordsFilter(videoData, filterSettings),
 				]
 			: [];
