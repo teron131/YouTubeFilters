@@ -284,6 +284,23 @@
             #subscriptionSection.visible {
                 display: block;
             }
+
+            .subscription-item {
+                padding: 10px;
+                border-radius: 12px;
+                background: rgba(31, 27, 22, 0.04);
+            }
+
+            .subscription-item strong {
+                display: block;
+            }
+
+            .subscription-item .meta {
+                margin-top: 3px;
+                color: var(--muted);
+                font-size: 12px;
+                word-break: break-all;
+            }
         </style>
     </head>
     <body>
@@ -303,7 +320,7 @@
                         <div class="check-row">
                             <div>
                                 <label for="viewsFilterEnabled">Views</label>
-                                <small class="help">Hide low-view videos on search/results. Home ignores this threshold.</small>
+                                <small class="help">Hide low-view videos when a real view count is available.</small>
                             </div>
                             <input type="checkbox" id="viewsFilterEnabled" />
                         </div>
@@ -327,6 +344,20 @@
                                 <small class="help">Hide videos older than the max age.</small>
                             </div>
                             <input type="checkbox" id="ageFilterEnabled" />
+                        </div>
+                        <div class="check-row">
+                            <div>
+                                <label for="preserveSubscribedChannels">Keep subscriptions visible</label>
+                                <small class="help">Don't hide videos from subscribed channels.</small>
+                            </div>
+                            <input type="checkbox" id="preserveSubscribedChannels" />
+                        </div>
+                        <div class="check-row">
+                            <div>
+                                <label for="highlightSubscribedChannels">Highlight subscriptions</label>
+                                <small class="help">Add a visual accent to videos from subscribed channels.</small>
+                            </div>
+                            <input type="checkbox" id="highlightSubscribedChannels" />
                         </div>
 
                         <div class="input-row">

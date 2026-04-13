@@ -79,6 +79,65 @@ function normalizeDurationText(value) {
 	return text && DURATION_BADGE_PATTERN.test(text) ? text : null;
 }
 
+function normalizeChannelPath(path) {
+	if (!path || typeof path !== "string") {
+		return null;
+	}
+
+	try {
+		const url = new URL(path, window.location.origin);
+		const normalizedPath = url.pathname.replace(/\/+$/, "");
+		if (
+			normalizedPath.startsWith("/@") ||
+			normalizedPath.startsWith("/channel/")
+		) {
+			return normalizedPath;
+		}
+	} catch {
+		return null;
+	}
+
+	return null;
+}
+
+function getChannelInfoFromEndpoint(endpoint) {
+	if (!endpoint || typeof endpoint !== "object") {
+		return { channelId: null, channelPath: null };
+	}
+
+	const channelPath = normalizeChannelPath(
+		endpoint?.browseEndpoint?.canonicalBaseUrl ||
+			endpoint?.commandMetadata?.webCommandMetadata?.url,
+	);
+	const browseId = endpoint?.browseEndpoint?.browseId;
+	const channelId =
+		typeof browseId === "string" && browseId.startsWith("UC")
+			? browseId
+			: channelPath?.startsWith("/channel/")
+				? channelPath.split("/channel/")[1]
+				: null;
+
+	return {
+		channelId: channelId || null,
+		channelPath,
+	};
+}
+
+function getChannelInfoFromRuns(value) {
+	if (!value || typeof value !== "object" || !Array.isArray(value.runs)) {
+		return { channelId: null, channelPath: null };
+	}
+
+	for (const run of value.runs) {
+		const channelInfo = getChannelInfoFromEndpoint(run?.navigationEndpoint);
+		if (channelInfo.channelId || channelInfo.channelPath) {
+			return channelInfo;
+		}
+	}
+
+	return { channelId: null, channelPath: null };
+}
+
 function extractHomeDuration(lockupViewModel) {
 	const overlays =
 		lockupViewModel?.contentImage?.thumbnailViewModel?.overlays || [];
@@ -168,6 +227,9 @@ function extractVideoFromRenderer(rendererData) {
 			? rendererData
 			: null;
 	if (searchRenderer) {
+		const searchChannelInfo = getChannelInfoFromRuns(
+			searchRenderer.ownerText || searchRenderer.longBylineText,
+		);
 		return {
 			videoId: searchRenderer.videoId || null,
 			title: textFromNode(searchRenderer.title),
@@ -181,6 +243,8 @@ function extractVideoFromRenderer(rendererData) {
 				textFromNode(searchRenderer.ownerText),
 				textFromNode(searchRenderer.longBylineText),
 			),
+			channelId: searchChannelInfo.channelId,
+			channelPath: searchChannelInfo.channelPath,
 		};
 	}
 
@@ -194,6 +258,12 @@ function extractVideoFromRenderer(rendererData) {
 		lockupViewModel?.metadata?.lockupMetadataViewModel?.metadata
 			?.contentMetadataViewModel?.metadataRows || [];
 	const metadataTexts = flattenMetadataTexts(metadataRows);
+	const uploaderPart = metadataRows[0]?.metadataParts?.[0]?.text;
+	const homeChannelInfo = Array.isArray(uploaderPart?.commandRuns)
+		? getChannelInfoFromEndpoint(
+				uploaderPart.commandRuns[0]?.onTap?.innertubeCommand,
+			)
+		: { channelId: null, channelPath: null };
 
 	return {
 		videoId: lockupViewModel.contentId || null,
@@ -207,6 +277,8 @@ function extractVideoFromRenderer(rendererData) {
 			/(streamed\s+)?\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago/i,
 		),
 		channelName: metadataTexts[0] || null,
+		channelId: homeChannelInfo.channelId,
+		channelPath: homeChannelInfo.channelPath,
 	};
 }
 

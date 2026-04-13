@@ -9,12 +9,36 @@ function loadSettings() {
 			settings.keywordFilterEnabled;
 		document.getElementById("ageFilterEnabled").checked =
 			settings.ageFilterEnabled;
+		document.getElementById("preserveSubscribedChannels").checked =
+			settings.preserveSubscribedChannels;
+		document.getElementById("highlightSubscribedChannels").checked =
+			settings.highlightSubscribedChannels;
 		document.getElementById("minViews").value = settings.minViews;
 		document.getElementById("minDuration").value = settings.minDuration;
 		document.getElementById("maxDuration").value = settings.maxDuration;
 		document.getElementById("maxAgeYears").value = settings.maxAgeYears;
 		displayKeywords(settings.keywords || []);
 	});
+}
+
+function normalizeSubscriptionRecord(channel) {
+	if (!channel) {
+		return null;
+	}
+
+	if (typeof channel === "string") {
+		return {
+			name: channel,
+			channelId: null,
+			channelPath: null,
+		};
+	}
+
+	return {
+		name: channel.name || "Unknown channel",
+		channelId: channel.channelId || null,
+		channelPath: channel.channelPath || null,
+	};
 }
 
 // Display keywords in the UI
@@ -129,12 +153,16 @@ function displaySubscriptionsFromStorage() {
 	chrome.storage.local.get(["youtube_subscriptions"], (result) => {
 		const subscriptionsList = document.getElementById("subscriptionsList");
 		const subscriptionSection = document.getElementById("subscriptionSection");
+		const statusDiv = document.getElementById("subscriptionStatus");
 
 		if (!subscriptionsList) return;
 
 		const data = result.youtube_subscriptions;
+		const channels = (data?.channels || [])
+			.map((channel) => normalizeSubscriptionRecord(channel))
+			.filter(Boolean);
 
-		if (!data?.channels || data.channels.length === 0) {
+		if (channels.length === 0) {
 			if (subscriptionSection) {
 				subscriptionSection.classList.remove("visible");
 			}
@@ -144,8 +172,21 @@ function displaySubscriptionsFromStorage() {
 		if (subscriptionSection) {
 			subscriptionSection.classList.add("visible");
 		}
-		subscriptionsList.innerHTML = data.channels
-			.map((ch) => `<div class="subscription-item">${ch}</div>`)
+		if (statusDiv && data?.extracted) {
+			statusDiv.innerHTML = `<div class="status-text success">Loaded ${channels.length} subscriptions<br><small>Updated ${new Date(data.extracted).toLocaleString()}</small></div>`;
+		}
+		subscriptionsList.innerHTML = channels
+			.map((channel) => {
+				const meta = [channel.channelPath, channel.channelId]
+					.filter(Boolean)
+					.join(" • ");
+				return `
+					<div class="subscription-item">
+						<strong>${channel.name}</strong>
+						${meta ? `<div class="meta">${meta}</div>` : ""}
+					</div>
+				`;
+			})
 			.join("");
 	});
 }
@@ -186,6 +227,12 @@ function saveSettings() {
 		keywordFilterEnabled: document.getElementById("keywordFilterEnabled")
 			.checked,
 		ageFilterEnabled: document.getElementById("ageFilterEnabled").checked,
+		preserveSubscribedChannels: document.getElementById(
+			"preserveSubscribedChannels",
+		).checked,
+		highlightSubscribedChannels: document.getElementById(
+			"highlightSubscribedChannels",
+		).checked,
 		minViews: parseInt(document.getElementById("minViews").value, 10) || 0,
 		minDuration:
 			parseInt(document.getElementById("minDuration").value, 10) || 0,

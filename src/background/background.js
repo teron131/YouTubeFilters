@@ -23,11 +23,11 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 // Extract subscriptions by injecting script into MAIN world (page context)
 async function handleSubscriptionExtraction(tabId) {
 	try {
-		// Inject extraction script with full access to window.ytInitialData
+		// Inject extraction script with full access to page-owned renderer data.
 		const results = await chrome.scripting.executeScript({
 			target: { tabId: tabId },
 			world: "MAIN", // Critical: Runs in page context, bypasses CSP
-			func: extractChannelNamesInPageContext,
+			func: extractSubscriptionsInPageContext,
 		});
 
 		if (!results || results.length === 0) {
@@ -41,6 +41,7 @@ async function handleSubscriptionExtraction(tabId) {
 			youtube_subscriptions: {
 				extracted: new Date().toISOString(),
 				channels: result.channels,
+				channelNames: result.channels.map((channel) => channel.name),
 				count: result.channels.length,
 			},
 		});
@@ -57,79 +58,196 @@ async function handleSubscriptionExtraction(tabId) {
 }
 
 // This function runs in page context (MAIN world) with full access to window
-function extractChannelNamesInPageContext() {
-	const channels = new Set();
-
-	// Method 1: Extract from text nodes using @handle pattern
-	try {
-		const allText = document.body.innerText;
-		const lines = allText.split("\n").map((l) => l.trim());
-
-		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i];
-			if (line.match(/^@[\w.]+/)) {
-				const prevLine = i > 0 ? lines[i - 1] : "";
-				if (
-					prevLine &&
-					prevLine.length > 2 &&
-					prevLine.length < 100 &&
-					!prevLine.includes("Subscribed") &&
-					!prevLine.match(/^[\d+M K B]*$/)
-				) {
-					channels.add(prevLine);
-				}
-			}
+function extractSubscriptionsInPageContext() {
+	function normalizeText(value) {
+		if (typeof value !== "string") {
+			return null;
 		}
-	} catch (e) {
-		console.error("[Extract] Text method error:", e);
+
+		const normalized = value.replace(/\s+/g, " ").trim();
+		return normalized || null;
 	}
 
-	// Method 2: Extract from DOM links
+	function textFromNode(value) {
+		if (!value) {
+			return null;
+		}
+
+		if (typeof value === "string") {
+			return normalizeText(value);
+		}
+
+		if (Array.isArray(value)) {
+			return normalizeText(
+				value
+					.map((item) => textFromNode(item))
+					.filter(Boolean)
+					.join(" "),
+			);
+		}
+
+		if (typeof value !== "object") {
+			return null;
+		}
+
+		return normalizeText(
+			[
+				value.simpleText,
+				value.content,
+				value.text,
+				Array.isArray(value.runs)
+					? value.runs.map((run) => textFromNode(run)).join(" ")
+					: null,
+			]
+				.filter(Boolean)
+				.join(" "),
+		);
+	}
+
+	function normalizeChannelPath(path) {
+		if (!path || typeof path !== "string") {
+			return null;
+		}
+
+		try {
+			const url = new URL(path, window.location.origin);
+			const normalizedPath = url.pathname.replace(/\/+$/, "");
+			if (
+				normalizedPath.startsWith("/@") ||
+				normalizedPath.startsWith("/channel/")
+			) {
+				return normalizedPath;
+			}
+		} catch {
+			return null;
+		}
+
+		return null;
+	}
+
+	function extractHandle(path) {
+		const normalizedPath = normalizeChannelPath(path);
+		if (!normalizedPath?.startsWith("/@")) {
+			return null;
+		}
+
+		return normalizedPath.slice(2);
+	}
+
+	function buildSubscriptionRecord({
+		name,
+		channelId,
+		channelPath,
+		description,
+	}) {
+		const normalizedName = normalizeText(name);
+		const normalizedPath = normalizeChannelPath(channelPath);
+		const finalChannelId =
+			typeof channelId === "string" && channelId.startsWith("UC")
+				? channelId
+				: normalizedPath?.startsWith("/channel/")
+					? normalizedPath.split("/channel/")[1]
+					: null;
+
+		if (!normalizedName && !finalChannelId && !normalizedPath) {
+			return null;
+		}
+
+		return {
+			name: normalizedName,
+			channelId: finalChannelId,
+			channelPath: normalizedPath,
+			channelUrl: normalizedPath
+				? new URL(normalizedPath, window.location.origin).href
+				: null,
+			handle: extractHandle(normalizedPath),
+			description: normalizeText(description),
+		};
+	}
+
+	function getChannelRecordFromRenderer(renderer) {
+		const data =
+			renderer?.data ||
+			renderer?.__data?.data ||
+			renderer?.__dataHost?.data ||
+			null;
+		const endpoint =
+			data?.navigationEndpoint ||
+			data?.longBylineText?.runs?.[0]?.navigationEndpoint ||
+			data?.shortBylineText?.runs?.[0]?.navigationEndpoint ||
+			null;
+
+		return buildSubscriptionRecord({
+			name:
+				textFromNode(data?.title) ||
+				normalizeText(
+					renderer?.querySelector(
+						"#main-link, a[href^='/@'], a[href^='/channel/']",
+					)?.textContent,
+				),
+			channelId: data?.channelId || endpoint?.browseEndpoint?.browseId || null,
+			channelPath:
+				endpoint?.browseEndpoint?.canonicalBaseUrl ||
+				endpoint?.commandMetadata?.webCommandMetadata?.url ||
+				renderer
+					?.querySelector("a[href^='/@'], a[href^='/channel/']")
+					?.getAttribute("href") ||
+				null,
+			description:
+				textFromNode(data?.descriptionSnippet) ||
+				normalizeText(renderer?.querySelector("#description")?.textContent),
+		});
+	}
+
+	const channelsByKey = new Map();
+
+	function addChannel(channel) {
+		if (!channel) {
+			return;
+		}
+
+		const key =
+			channel.channelId ||
+			channel.channelPath?.toLowerCase() ||
+			channel.name?.toLowerCase();
+		if (!key) {
+			return;
+		}
+
+		if (!channelsByKey.has(key)) {
+			channelsByKey.set(key, channel);
+		}
+	}
+
+	try {
+		document.querySelectorAll("ytd-channel-renderer").forEach((renderer) => {
+			addChannel(getChannelRecordFromRenderer(renderer));
+		});
+	} catch (e) {
+		console.error("[Extract] Renderer extraction error:", e);
+	}
+
+	// Fallback: harvest channel links that appear in the subscriptions nav/contents.
 	try {
 		document
-			.querySelectorAll('a[href*="/channel/"], a[href*="/@"]')
+			.querySelectorAll("a[href^='/@'], a[href^='/channel/']")
 			.forEach((link) => {
-				const text = link.textContent?.trim();
-				if (text && text.length > 2 && text.length < 100 && !text.match(/^@/)) {
-					channels.add(text);
-				}
+				addChannel(
+					buildSubscriptionRecord({
+						name: link.textContent,
+						channelPath: link.getAttribute("href"),
+					}),
+				);
 			});
 	} catch (e) {
-		console.error("[Extract] DOM method error:", e);
+		console.error("[Extract] Link fallback error:", e);
 	}
 
-	// Method 3: Extract from window.ytInitialData (most comprehensive)
-	if (window.ytInitialData) {
-		try {
-			const json = JSON.stringify(window.ytInitialData);
-			const titleMatches =
-				json.match(/"title":\{"simpleText":"([^"]{2,100})"/g) || [];
-
-			titleMatches.forEach((match) => {
-				const name = match.split('"simpleText":"')[1].split('"')[0];
-				if (name && !name.match(/^@|Subscribed|Subscribe/i)) {
-					channels.add(name);
-				}
-			});
-		} catch (e) {
-			console.error("[Extract] ytInitialData method error:", e);
-		}
-	}
-
-	// Filter and clean results
-	const result = Array.from(channels)
-		.filter((name) => {
-			if (name.length < 2 || name.length > 100) return false;
-			if (name.match(/^[\d\s.\-+K M B]+$/i)) return false;
-			if (
-				name.toLowerCase().includes("subscribe") ||
-				name.toLowerCase().includes("subscribed") ||
-				name.includes("@")
-			)
-				return false;
-			return true;
-		})
-		.sort();
+	const result = Array.from(channelsByKey.values()).sort((left, right) =>
+		(left.name || left.channelPath || left.channelId || "").localeCompare(
+			right.name || right.channelPath || right.channelId || "",
+		),
+	);
 
 	// Save to localStorage for backup
 	try {
@@ -138,6 +256,7 @@ function extractChannelNamesInPageContext() {
 			JSON.stringify({
 				extracted: new Date().toISOString(),
 				channels: result,
+				channelNames: result.map((channel) => channel.name),
 				count: result.length,
 			}),
 		);

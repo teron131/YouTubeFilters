@@ -108,6 +108,96 @@ function extractMatch(text, pattern) {
 	return match ? normalizeText(match[0]) : null;
 }
 
+function normalizeChannelPath(path) {
+	if (!path || typeof path !== "string") {
+		return null;
+	}
+
+	try {
+		const url = new URL(path, window.location.origin);
+		const normalizedPath = url.pathname.replace(/\/+$/, "");
+		if (
+			normalizedPath.startsWith("/@") ||
+			normalizedPath.startsWith("/channel/")
+		) {
+			return normalizedPath;
+		}
+	} catch {
+		return null;
+	}
+
+	return null;
+}
+
+function getChannelIdFromPath(path) {
+	const normalizedPath = normalizeChannelPath(path);
+	if (!normalizedPath?.startsWith("/channel/")) {
+		return null;
+	}
+
+	return normalizedPath.split("/channel/")[1] || null;
+}
+
+function createEmptySubscriptionLookup() {
+	return {
+		ids: new Set(),
+		paths: new Set(),
+		names: new Set(),
+	};
+}
+
+function buildSubscriptionLookup(channels) {
+	const lookup = createEmptySubscriptionLookup();
+
+	for (const channel of channels || []) {
+		if (typeof channel === "string") {
+			const normalizedName = normalizeText(channel)?.toLowerCase();
+			if (normalizedName) {
+				lookup.names.add(normalizedName);
+			}
+			continue;
+		}
+
+		const channelId =
+			typeof channel?.channelId === "string" &&
+			channel.channelId.startsWith("UC")
+				? channel.channelId
+				: getChannelIdFromPath(channel?.channelPath);
+		const channelPath = normalizeChannelPath(channel?.channelPath);
+		const channelName = normalizeText(channel?.name)?.toLowerCase();
+
+		if (channelId) {
+			lookup.ids.add(channelId);
+		}
+		if (channelPath) {
+			lookup.paths.add(channelPath.toLowerCase());
+		}
+		if (channelName) {
+			lookup.names.add(channelName);
+		}
+	}
+
+	return lookup;
+}
+
+function isSubscribedChannel(videoData) {
+	const channelId =
+		typeof videoData.channelId === "string" &&
+		videoData.channelId.startsWith("UC")
+			? videoData.channelId
+			: getChannelIdFromPath(videoData.channelPath);
+	const channelPath = normalizeChannelPath(
+		videoData.channelPath,
+	)?.toLowerCase();
+	const channelName = normalizeText(videoData.channelName)?.toLowerCase();
+
+	return Boolean(
+		(channelId && subscribedChannels.ids.has(channelId)) ||
+			(channelPath && subscribedChannels.paths.has(channelPath)) ||
+			(channelName && subscribedChannels.names.has(channelName)),
+	);
+}
+
 const VIDEO_CARD_SELECTOR =
 	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model";
 
@@ -138,7 +228,8 @@ function hasActiveHideFilters(settings) {
 		settings.viewsFilterEnabled ||
 			settings.durationFilterEnabled ||
 			settings.keywordFilterEnabled ||
-			settings.ageFilterEnabled,
+			settings.ageFilterEnabled ||
+			settings.highlightSubscribedChannels,
 	);
 }
 
@@ -201,12 +292,16 @@ function resetProcessedVideoCards(root = document) {
 		videoElement.removeAttribute("data-filter-processed");
 		videoElement.removeAttribute("data-filtered");
 		videoElement.removeAttribute("data-filter-reason");
+		videoElement.removeAttribute("data-subscribed-channel");
 		videoElement.removeAttribute("data-sort-pending");
 		delete videoElement.dataset.sortValue;
 		videoElement.style.display = "";
 		videoElement.style.visibility = "";
 		videoElement.style.opacity = "";
 		videoElement.style.pointerEvents = "";
+		videoElement.style.boxShadow = "";
+		videoElement.style.borderRadius = "";
+		videoElement.style.background = "";
 	}
 }
 
@@ -302,6 +397,8 @@ function extractVideoData(videoElement) {
 		publishTime: structuredData.publishTime || null,
 		videoId: structuredData.videoId || null,
 		channelName: structuredData.channelName || null,
+		channelId: structuredData.channelId || null,
+		channelPath: structuredData.channelPath || null,
 	};
 
 	try {
@@ -410,6 +507,35 @@ function extractVideoData(videoElement) {
 			);
 			if (timeMatch) {
 				data.publishTime = normalizeText(timeMatch[0]);
+			}
+		}
+
+		const channelLink = videoElement.querySelector(
+			"a[href^='/@'], a[href^='/channel/']",
+		);
+		if (channelLink) {
+			if (!data.channelPath) {
+				data.channelPath = normalizeChannelPath(
+					channelLink.getAttribute("href"),
+				);
+			}
+			if (!data.channelId) {
+				data.channelId = getChannelIdFromPath(data.channelPath);
+			}
+			if (!data.channelName) {
+				data.channelName =
+					normalizeText(channelLink.textContent) ||
+					normalizeText(channelLink.getAttribute("title"));
+			}
+		}
+
+		if (!data.channelName && videoElement.tagName === "YT-LOCKUP-VIEW-MODEL") {
+			const lines = (videoElement.innerText || "")
+				.split("\n")
+				.map((line) => normalizeText(line))
+				.filter(Boolean);
+			if (lines.length >= 3) {
+				data.channelName = lines[2];
 			}
 		}
 	} catch (error) {
@@ -551,6 +677,26 @@ function checkKeywordsFilter(videoData, settings) {
 // Global state
 let filterSettings = DEFAULT_SETTINGS;
 const filterStats = { views: 0, keywords: 0, duration: 0, age: 0, total: 0 };
+let subscribedChannels = createEmptySubscriptionLookup();
+
+function applySubscribedChannelState(videoElement, isSubscribed, settings) {
+	if (isSubscribed) {
+		videoElement.setAttribute("data-subscribed-channel", "true");
+	} else {
+		videoElement.removeAttribute("data-subscribed-channel");
+	}
+
+	if (isSubscribed && settings.highlightSubscribedChannels) {
+		videoElement.style.boxShadow = "0 0 0 2px rgba(47, 143, 99, 0.65)";
+		videoElement.style.borderRadius = "14px";
+		videoElement.style.background = "rgba(47, 143, 99, 0.08)";
+		return;
+	}
+
+	videoElement.style.boxShadow = "";
+	videoElement.style.borderRadius = "";
+	videoElement.style.background = "";
+}
 
 /**
  * Stores filtered video information for history tracking
@@ -616,6 +762,8 @@ function runAllFilters(forceFullScan = false) {
 		// Extract video data
 		const videoData = extractVideoData(videoElement);
 		const title = videoData.title || "Unknown title";
+		const isSubscribed = isSubscribedChannel(videoData);
+		applySubscribedChannelState(videoElement, isSubscribed, filterSettings);
 
 		// Apply each filter in order
 		const filters = shouldApplyHideFilters()
@@ -629,8 +777,10 @@ function runAllFilters(forceFullScan = false) {
 
 		// Find first filter that triggers
 		const triggeredFilter = filters.find((f) => f.shouldFilter);
+		const shouldPreserveSubscribedVideo =
+			isSubscribed && filterSettings.preserveSubscribedChannels;
 
-		if (triggeredFilter) {
+		if (triggeredFilter && !shouldPreserveSubscribedVideo) {
 			videoElement.style.display = "none";
 			videoElement.style.visibility = "";
 			videoElement.style.opacity = "";
@@ -714,66 +864,83 @@ function init() {
 	// Load settings and start filtering
 	chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
 		filterSettings = settings;
-		console.log("[Filter] Settings loaded:", filterSettings);
+		chrome.storage.local.get(["youtube_subscriptions"], (localData) => {
+			subscribedChannels = buildSubscriptionLookup(
+				localData.youtube_subscriptions?.channels || [],
+			);
+			console.log("[Filter] Settings loaded:", filterSettings);
 
-		resetProcessedVideoCards();
-		stageVideoCardsForSort();
+			resetProcessedVideoCards();
+			stageVideoCardsForSort();
 
-		// Run initial filter
-		setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
+			// Run initial filter
+			setTimeout(() => runAllFilters(true), 1000); // Give YouTube time to render
 
-		// Set up MutationObserver for dynamically loaded content
-		let filterTimeout = null;
-		const observer = new MutationObserver((mutations) => {
-			const hasNewContent = mutations.some((mutation) => {
-				Array.from(mutation.addedNodes).forEach((node) => {
-					if (node.nodeType === Node.ELEMENT_NODE) {
-						if (node.matches?.(VIDEO_CARD_SELECTOR)) {
+			// Set up MutationObserver for dynamically loaded content
+			let filterTimeout = null;
+			const observer = new MutationObserver((mutations) => {
+				const hasNewContent = mutations.some((mutation) => {
+					Array.from(mutation.addedNodes).forEach((node) => {
+						if (node.nodeType === Node.ELEMENT_NODE) {
+							if (node.matches?.(VIDEO_CARD_SELECTOR)) {
+								stageVideoCardsForSort(node);
+								return;
+							}
+
 							stageVideoCardsForSort(node);
-							return;
 						}
+					});
 
-						stageVideoCardsForSort(node);
-					}
+					return Array.from(mutation.addedNodes).some((node) => {
+						// Check if node itself is a video card
+						if (
+							node.nodeName === "YTD-VIDEO-RENDERER" ||
+							node.nodeName === "YTD-RICH-ITEM-RENDERER" ||
+							node.nodeName === "YTD-GRID-VIDEO-RENDERER" ||
+							node.nodeName === "YT-LOCKUP-VIEW-MODEL"
+						) {
+							return true;
+						}
+						// Or if it contains video cards
+						return node.querySelector?.(VIDEO_CARD_SELECTOR);
+					});
 				});
 
-				return Array.from(mutation.addedNodes).some((node) => {
-					// Check if node itself is a video card
-					if (
-						node.nodeName === "YTD-VIDEO-RENDERER" ||
-						node.nodeName === "YTD-RICH-ITEM-RENDERER" ||
-						node.nodeName === "YTD-GRID-VIDEO-RENDERER"
-					) {
-						return true;
-					}
-					// Or if it contains video cards
-					return node.querySelector?.(VIDEO_CARD_SELECTOR);
-				});
+				if (hasNewContent) {
+					// Debounce: clear existing timeout and set new one
+					clearTimeout(filterTimeout);
+					filterTimeout = setTimeout(() => {
+						console.log("[Filter] New videos detected, re-running filters...");
+						runAllFilters();
+					}, 800); // Batch multiple additions
+				}
 			});
 
-			if (hasNewContent) {
-				// Debounce: clear existing timeout and set new one
-				clearTimeout(filterTimeout);
-				filterTimeout = setTimeout(() => {
-					console.log("[Filter] New videos detected, re-running filters...");
-					runAllFilters();
-				}, 800); // Batch multiple additions
+			const contentRoot = document.querySelector("ytd-app") || document.body;
+			if (contentRoot) {
+				observer.observe(contentRoot, {
+					childList: true,
+					subtree: true,
+				});
+				console.log("[Filter] Observer started");
+			} else {
+				console.log("[Filter] Warning: Could not find content root");
 			}
 		});
-
-		const contentRoot = document.querySelector("ytd-app") || document.body;
-		if (contentRoot) {
-			observer.observe(contentRoot, {
-				childList: true,
-				subtree: true,
-			});
-			console.log("[Filter] Observer started");
-		} else {
-			console.log("[Filter] Warning: Could not find content root");
-		}
 	});
 
 	chrome.storage.onChanged.addListener((changes, areaName) => {
+		if (areaName === "local" && changes.youtube_subscriptions) {
+			subscribedChannels = buildSubscriptionLookup(
+				changes.youtube_subscriptions.newValue?.channels || [],
+			);
+			console.log("[Filter] Subscription list changed, re-running filters...");
+			resetProcessedVideoCards();
+			stageVideoCardsForSort();
+			runAllFilters(true);
+			return;
+		}
+
 		if (areaName !== "sync") {
 			return;
 		}
