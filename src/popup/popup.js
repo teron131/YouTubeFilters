@@ -22,6 +22,22 @@ function loadSettings() {
 }
 
 function normalizeSubscriptionRecord(channel) {
+	function labelFromPath(channelPath) {
+		if (typeof channelPath !== "string") {
+			return null;
+		}
+
+		if (channelPath.startsWith("/@")) {
+			return channelPath.slice(2);
+		}
+
+		if (channelPath.startsWith("/channel/")) {
+			return channelPath.slice("/channel/".length);
+		}
+
+		return null;
+	}
+
 	if (!channel) {
 		return null;
 	}
@@ -35,7 +51,8 @@ function normalizeSubscriptionRecord(channel) {
 	}
 
 	return {
-		name: channel.name || "Unknown channel",
+		name:
+			channel.name || labelFromPath(channel.channelPath) || "Unknown channel",
 		channelId: channel.channelId || null,
 		channelPath: channel.channelPath || null,
 	};

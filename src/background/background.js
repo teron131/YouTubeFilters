@@ -165,6 +165,19 @@ function extractSubscriptionsInPageContext() {
 		};
 	}
 
+	function mergeChannelRecords(existingChannel, nextChannel) {
+		return {
+			name: nextChannel.name || existingChannel.name || null,
+			channelId: nextChannel.channelId || existingChannel.channelId || null,
+			channelPath:
+				nextChannel.channelPath || existingChannel.channelPath || null,
+			channelUrl: nextChannel.channelUrl || existingChannel.channelUrl || null,
+			handle: nextChannel.handle || existingChannel.handle || null,
+			description:
+				nextChannel.description || existingChannel.description || null,
+		};
+	}
+
 	function getChannelRecordFromRenderer(renderer) {
 		const data =
 			renderer?.data ||
@@ -206,15 +219,28 @@ function extractSubscriptionsInPageContext() {
 			return;
 		}
 
-		const key =
-			channel.channelId ||
-			channel.channelPath?.toLowerCase() ||
-			channel.name?.toLowerCase();
-		if (!key) {
+		const normalizedPath = channel.channelPath?.toLowerCase() || null;
+		const normalizedName = channel.name?.toLowerCase() || null;
+		const existingEntry = Array.from(channelsByKey.entries()).find(
+			([, existingChannel]) =>
+				(channel.channelId &&
+					existingChannel.channelId === channel.channelId) ||
+				(normalizedPath &&
+					existingChannel.channelPath?.toLowerCase() === normalizedPath) ||
+				(normalizedName &&
+					existingChannel.name?.toLowerCase() === normalizedName),
+		);
+		if (existingEntry) {
+			const [existingKey, existingChannel] = existingEntry;
+			channelsByKey.set(
+				existingKey,
+				mergeChannelRecords(existingChannel, channel),
+			);
 			return;
 		}
 
-		if (!channelsByKey.has(key)) {
+		const key = channel.channelId || normalizedPath || normalizedName;
+		if (key) {
 			channelsByKey.set(key, channel);
 		}
 	}
