@@ -109,7 +109,7 @@ function extractMatch(text, pattern) {
 }
 
 const VIDEO_CARD_SELECTOR =
-	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer";
+	"ytd-video-renderer, ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model";
 
 /**
  * Sorting has been removed for this extension.
@@ -318,6 +318,8 @@ function extractVideoData(videoElement) {
 				videoElement.querySelector("#video-title") ||
 				videoElement.querySelector("a#video-title-link") ||
 				videoElement.querySelector("#video-title-link") ||
+				videoElement.querySelector("h3[title]") ||
+				videoElement.querySelector(".ytLockupMetadataViewModelHeadingReset") ||
 				videoElement.querySelector("h3 a") ||
 				videoElement.querySelector("yt-formatted-string#video-title") ||
 				videoElement.querySelector("[aria-label]");
